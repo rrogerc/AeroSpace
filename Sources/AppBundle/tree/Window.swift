@@ -7,6 +7,7 @@ open class Window: TreeNode, Hashable {
     var lastFloatingSize: CGSize?
     var isFullscreen: Bool = false
     var noOuterGapsInFullscreen: Bool = false
+    var fullscreenWidth: CGFloat? = nil
     var layoutReason: LayoutReason = .standard
 
     @MainActor
