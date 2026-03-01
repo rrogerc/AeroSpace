@@ -100,7 +100,13 @@ extension Window {
         let monitorRect = noOuterGapsInFullscreen
             ? context.workspace.workspaceMonitor.visibleRect
             : context.workspace.workspaceMonitor.visibleRectPaddedByOuterGaps
-        setAxFrame(monitorRect.topLeftCorner, CGSize(width: monitorRect.width, height: monitorRect.height))
+        if let fullscreenWidth {
+            let newWidth = monitorRect.width * fullscreenWidth
+            let newX = monitorRect.topLeftX + (monitorRect.width - newWidth) / 2
+            setAxFrame(CGPoint(x: newX, y: monitorRect.topLeftY), CGSize(width: newWidth, height: monitorRect.height))
+        } else {
+            setAxFrame(monitorRect.topLeftCorner, CGSize(width: monitorRect.width, height: monitorRect.height))
+        }
     }
 }
 

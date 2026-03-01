@@ -27,6 +27,7 @@ struct FullscreenCommand: Command {
         }
         window.isFullscreen = newState
         window.noOuterGapsInFullscreen = args.noOuterGaps
+        window.fullscreenWidth = args.width.map { CGFloat($0) }
 
         // Focus on its own workspace
         window.markAsMostRecentChild()
