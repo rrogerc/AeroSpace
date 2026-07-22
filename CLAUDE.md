@@ -19,13 +19,13 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
 ./rebuild-and-install.sh --check  # validate environment only, no build
 ```
 
-(Also runnable as `aerospace-rebuild` — `~/bin/aerospace-rebuild` is a symlink to this script.)
+(Also runnable as `aerospace-rebuild` — `~/.local/bin/aerospace-rebuild` is a symlink to this script.)
 
 It does, in order:
 1. **Picks the right Ruby** — prepends keg-only `ruby@3.4` to `PATH` (see Ruby note below), so no manual `PATH=` prefix is needed.
 2. **Builds** the release via `./build-release.sh` (man pages + site, shell completion, universal arm64+x86_64 binary, Xcode app, codesign, validation, zip/brew packaging).
 3. **Quits** the running AeroSpace.
-4. **Installs** `.release/AeroSpace.app` → `/Applications/AeroSpace.app` and `.release/aerospace` → `~/bin/aerospace`
+4. **Installs** `.release/AeroSpace.app` → `/Applications/AeroSpace.app` and `.release/aerospace` → `~/.local/bin/aerospace`
    (the install is a manual copy — this fork does **not** use the `aerospace-dev` brew cask that `install-from-sources.sh` sets up).
 5. **Relaunches**, waits for the server, and prints the running version.
 

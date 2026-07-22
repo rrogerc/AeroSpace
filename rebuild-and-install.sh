@@ -4,7 +4,7 @@
 # What it does:
 #   1. Builds the release (./build-release.sh: docs, completion, universal binary, Xcode, validation)
 #   2. Quits the running AeroSpace
-#   3. Installs the new app -> /Applications and the new CLI -> ~/bin
+#   3. Installs the new app -> /Applications and the new CLI -> ~/.local/bin
 #   4. Relaunches and prints the running version
 #
 # It handles the Ruby quirk automatically: the Gemfile pins `ruby ~> 3.0`, but the default `ruby`
@@ -19,11 +19,11 @@
 #     ./rebuild-and-install.sh --check    validate environment only (no build), then exit
 #
 # Override install locations / Ruby with env vars if you ever need to:
-#     APP_DEST (default /Applications/AeroSpace.app)  CLI_DEST (default ~/bin/aerospace)  RUBY_FORMULA (default ruby@3.4)
+#     APP_DEST (default /Applications/AeroSpace.app)  CLI_DEST (default ~/.local/bin/aerospace)  RUBY_FORMULA (default ruby@3.4)
 
 set -euo pipefail
 
-# Resolve this script's real directory (the repo root), even when invoked via a symlink in ~/bin.
+# Resolve this script's real directory (the repo root), even when invoked via a symlink in ~/.local/bin.
 source="${BASH_SOURCE[0]}"
 while [ -L "$source" ]; do
     dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
@@ -33,7 +33,7 @@ done
 cd "$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
 
 APP_DEST="${APP_DEST:-/Applications/AeroSpace.app}"
-CLI_DEST="${CLI_DEST:-$HOME/bin/aerospace}"
+CLI_DEST="${CLI_DEST:-$HOME/.local/bin/aerospace}"
 RUBY_FORMULA="${RUBY_FORMULA:-ruby@3.4}"
 
 check_only=0
