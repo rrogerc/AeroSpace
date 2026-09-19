@@ -4,13 +4,14 @@ import Common
 @MainActor
 private var resizeWithMouseTask: Task<(), any Error>? = nil
 
-func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
+func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, context: UnsafeMutableRawPointer?) {
     let notif = notif as String
-    let windowId = ax.containingWindowId()
+    let windowId = unsafe notificationWindowId(context) { ax.containingWindowId() }
+    let scope = RefreshScope.app(axTaskLocalAppThreadToken?.pid)
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         guard let windowId, let window = Window.get(byId: windowId), try await isManipulatedWithMouse(window) else {
-            scheduleCancellableCompleteRefreshSession(.ax(notif))
+            scheduleCancellableCompleteRefreshSession(.ax(notif), scope: scope)
             return
         }
         resizeWithMouseTask?.cancel()

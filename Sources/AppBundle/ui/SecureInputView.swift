@@ -27,7 +27,7 @@ public final class SecureInputPanel: NSPanelHud {
             let panelFrame = NSRect(x: x, y: 20, width: iconSize.width, height: iconSize.width)
             self.setFrame(panelFrame, display: true)
             self.orderFrontRegardless()
-        } else {
+        } else if isVisible {
             close()
         }
     }

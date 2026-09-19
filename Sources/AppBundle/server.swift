@@ -59,6 +59,7 @@ private func newConnection(_ connection: NWConnection) async { // todo add exit 
                 """
             return await answerToClient(exitCode: EXIT_CODE_TWO, stderr: msg)
         }) else { continue }
+        signposter.emitEvent("socketRequestDecoded")
         // Handle subscribe before parseCommand (subscribe doesn't have a Command impl)
         if request.args.first == "subscribe" {
             switch parseSubscribeCmdArgs(request.args.slice(1...).orDie()) {
@@ -87,7 +88,7 @@ private func newConnection(_ connection: NWConnection) async { // todo add exit 
             case .cmd(let command):
                 var answer: ServerAnswer =
                     await Result {
-                        try await runLightSession(.socketServer(command.args), token) { () throws in
+                        try await runLightSession(.socketServer(command.args), token, preferCachedFocus: command.isWorkspaceSwitch) { () throws in
                             let env = CmdEnv.init(
                                 windowId: request.windowId.flattenOptional(),
                                 workspaceName: request.workspace.flattenOptional(),

@@ -4,6 +4,7 @@ import Common
 final class MacWindow: Window {
     let macApp: MacApp
     private var prevUnhiddenProportionalPositionInsideWorkspaceRect: CGPoint?
+    private var hiddenPlacement: HiddenWindowPlacement?
 
     @MainActor
     private init(_ id: UInt32, _ actor: MacApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -120,11 +121,24 @@ final class MacWindow: Window {
 
     // todo it's part of the window layout and should be moved to layoutRecursive.swift
     @MainActor
-    func hideInCorner(_ corner: OptimalHideCorner) async throws {
+    func hideInCorner(_ corner: OptimalHideCorner, observation: HiddenWindowFrameObservation? = nil) async throws {
         guard let nodeMonitor else { return }
+        let observedBounds = observation.flatMap {
+            $0.isCurrent(latestFrame: macApp.lastFrameJob(windowId)) ? $0.info.bounds : nil
+        }
         // Don't accidentally override prevUnhiddenEmulationPosition in case of subsequent `hideInCorner` calls
         if !isHiddenInCorner {
-            guard let windowRect = try await getAxRect(.cancellable) else { return }
+            let windowRect: Rect? = if !macApp.hasPendingFrame(windowId), let info = getWindowServerWindow(windowId, pid: macApp.pid) {
+                // A settled frame can be read without waiting behind discovery or activation
+                // on the app's worker. Pending writes still require its read-after-write barrier.
+                info.rect
+            } else {
+                try await getAxRect(.cancellable)
+            }
+            guard let windowRect else { return }
+            try checkCancellation()
+            // A newer switch can make this workspace visible while its frame read is in flight.
+            guard nodeWorkspace?.isVisible == false else { return }
             // Check for isHiddenInCorner for the second time because of the suspension point above
             if !isHiddenInCorner {
                 let topLeftCorner = windowRect.topLeftCorner
@@ -140,7 +154,8 @@ final class MacWindow: Window {
         let p: CGPoint
         switch corner {
             case .bottomLeftCorner:
-                guard let s = try await getAxSize(.cancellable) else { fallthrough }
+                let size: CGSize? = if let observedBounds { observedBounds.size } else { try await getAxSize(.cancellable) }
+                guard let s = size else { fallthrough }
                 // Zoom will jump off if you do one pixel offset https://github.com/nikitabobko/AeroSpace/issues/527
                 // todo this ad hoc won't be necessary once I implement optimization suggested by Zalim
                 let onePixelOffset = macApp.appId == .zoom ? .zero : CGPoint(x: 1, y: -1)
@@ -151,11 +166,24 @@ final class MacWindow: Window {
                 let onePixelOffset = macApp.appId == .zoom ? .zero : CGPoint(x: 1, y: 1)
                 p = nodeMonitor.visibleRect.bottomRightCorner - onePixelOffset
         }
+        try checkCancellation()
+        guard nodeWorkspace?.isVisible == false else { return }
+        // A completed request is not an acknowledgement of its geometry. Skip only when
+        // WindowServer observed the target, and no move has been submitted since that read.
+        if observedBounds?.origin == p, observation?.isCurrent(latestFrame: macApp.lastFrameJob(windowId)) == true { return }
+        if var placement = hiddenPlacement,
+           placement.matches(observation: observation, target: p, latestFrame: macApp.lastFrameJob(windowId), monitors: monitorInfos.map(\.rect))
+        {
+            hiddenPlacement = placement
+            return
+        }
         setAxFrame(p, nil)
+        hiddenPlacement = macApp.lastFrameJob(windowId).map { HiddenWindowPlacement(target: p, frame: $0) }
     }
 
     @MainActor
     func unhideFromCorner() {
+        hiddenPlacement = nil
         guard let prevUnhiddenProportionalPositionInsideWorkspaceRect else { return }
         guard let nodeWorkspace else { return } // hiding only makes sense for workspace windows
         guard let parent else { return }

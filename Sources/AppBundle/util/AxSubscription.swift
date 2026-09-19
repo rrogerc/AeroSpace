@@ -14,9 +14,12 @@ final class AxSubscription {
         self.ax = ax
     }
 
-    private func subscribe(_ key: String) throws -> Bool {
+    private func subscribe(_ key: String, windowId: UInt32?) throws -> Bool {
         axThreadToken.checkEquals(axTaskLocalAppThreadToken)
-        if AXObserverAddNotification(obs, ax, key as CFString, nil) == .success {
+        // AX passes refcon through unchanged. Store the integer ID itself, never a
+        // pointer to an object whose lifetime could end before a queued callback.
+        let context = unsafe windowId.flatMap { unsafe UnsafeMutableRawPointer(bitPattern: UInt($0)) }
+        if unsafe AXObserverAddNotification(obs, ax, key as CFString, context) == .success {
             notifKeys.insert(key)
             return true
         } else {
@@ -29,6 +32,7 @@ final class AxSubscription {
         _ ax: AXUIElement,
         _ job: RunLoopJob,
         _ handlerToNotifKeyMapping: HandlerToNotifKeyMapping,
+        windowId: UInt32? = nil,
     ) throws -> [AxSubscription] {
         var result: [AxSubscription] = []
         var visitedNotifKeys: Set<String> = []
@@ -39,7 +43,7 @@ final class AxSubscription {
             for key: String in notifKeys {
                 try job.checkCancellation()
                 assert(visitedNotifKeys.insert(key).inserted)
-                if try !subscription.subscribe(key) { return [] }
+                if try !subscription.subscribe(key, windowId: windowId) { return [] }
             }
             CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), .defaultMode)
             result.append(subscription)
@@ -57,3 +61,9 @@ final class AxSubscription {
 }
 
 typealias HandlerToNotifKeyMapping = [(AXObserverCallback, [String])]
+
+func notificationWindowId(_ context: UnsafeMutableRawPointer?, fallback: () -> UInt32?) -> UInt32? {
+    let rawId = UInt(bitPattern: context)
+    if let windowId = UInt32(exactly: rawId), windowId != 0 { return windowId }
+    return fallback()
+}

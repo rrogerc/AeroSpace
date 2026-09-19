@@ -20,6 +20,17 @@ private var focusedApp: (any AbstractApp)? {
 }
 
 @MainActor
-func getNativeFocusedWindow(_ cm: CancellationMode) async throws -> Window? {
-    try await focusedApp?.getFocusedWindow(cm)
+func getNativeFocusedWindow(_ cm: CancellationMode, preferCached: Bool = false) async throws -> Window? {
+    if preferCached && !isUnitTest,
+       let windows = getOnScreenWindowServerWindows(),
+       let cached = cachedNativeFocusedWindow(
+           frontmostPid: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+           windows: windows,
+           nativeVisibility: focus.windowOrNil.flatMap { NativeVisibilityGates.shared.get($0.windowId, pid: $0.app.pid) },
+           appWindowCount: (focus.windowOrNil?.app as? MacApp)?.windowsCount,
+       )
+    {
+        return cached
+    }
+    return try await focusedApp?.getFocusedWindow(cm)
 }

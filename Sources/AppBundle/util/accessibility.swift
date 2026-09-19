@@ -341,26 +341,48 @@ private func windowOrNil(_ any: Any?) -> WindowIdAndAxUiElementMock? {
     }
 }
 
+enum AxAttributeResult<Value> {
+    case success(Value)
+    case failure(AXError)
+
+    var value: Value? {
+        switch self {
+            case .success(let value): value
+            case .failure: nil
+        }
+    }
+}
+
 extension AXUIElement: AxUiElementMock {
     func get<Attr: ReadableAttr>(_ attr: Attr) -> Attr.T? {
-        let state = signposter.beginInterval(#function, "attr: \(attr.key) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
+        getResult(attr).value
+    }
+
+    func getResult<Attr: ReadableAttr>(_ attr: Attr) -> AxAttributeResult<Attr.T> {
+        let state = signposter.beginInterval(#function, "attr: \(attr.key, privacy: .public) pid: \(axTaskLocalAppThreadToken?.pid ?? 0, privacy: .public)")
         defer { signposter.endInterval(#function, state) }
         var raw: AnyObject?
-        return unsafe AXUIElementCopyAttributeValue(self, attr.key as CFString, &raw) == .success
-            ? raw.flatMap(attr.getter)
-            : nil
+        let error = unsafe AXUIElementCopyAttributeValue(self, attr.key as CFString, &raw)
+        guard error == .success else { return .failure(error) }
+        guard let raw else { return .failure(.noValue) }
+        guard let value = attr.getter(raw) else { return .failure(.failure) }
+        return .success(value)
     }
 
     @discardableResult func set<Attr: WritableAttr>(_ attr: Attr, _ value: Attr.T) -> Bool {
-        if serverArgs.isReadOnly { return false }
-        let state = signposter.beginInterval(#function, "attr: \(attr.key) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
+        setResult(attr, value) == .success
+    }
+
+    func setResult<Attr: WritableAttr>(_ attr: Attr, _ value: Attr.T) -> AXError {
+        if serverArgs.isReadOnly { return .failure }
+        let state = signposter.beginInterval(#function, "attr: \(attr.key, privacy: .public) pid: \(axTaskLocalAppThreadToken?.pid ?? 0, privacy: .public)")
         defer { signposter.endInterval(#function, state) }
-        guard let value = attr.setter(value) else { return false }
-        return AXUIElementSetAttributeValue(self, attr.key as CFString, value) == .success
+        guard let value = attr.setter(value) else { return .illegalArgument }
+        return AXUIElementSetAttributeValue(self, attr.key as CFString, value)
     }
 
     func containingWindowId() -> CGWindowID? {
-        let state = signposter.beginInterval(#function, "axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
+        let state = signposter.beginInterval(#function, "pid: \(axTaskLocalAppThreadToken?.pid ?? 0, privacy: .public)")
         defer { signposter.endInterval(#function, state) }
         var cgWindowId = CGWindowID()
         return unsafe _AXUIElementGetWindow(self, &cgWindowId) == .success && cgWindowId != kCGNullWindowID

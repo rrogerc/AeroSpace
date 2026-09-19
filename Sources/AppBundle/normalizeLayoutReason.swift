@@ -1,17 +1,18 @@
 @MainActor
-func normalizeLayoutReason() async throws {
+func normalizeLayoutReason(scope: RefreshScope = .all) async throws {
     for workspace in Workspace.all {
-        let windows: [Window] = workspace.allLeafWindowsRecursive
+        let windows: [Window] = workspace.allLeafWindowsRecursive.filter { scope.contains($0.app.pid) }
         try await _normalizeLayoutReason(workspace: workspace, windows: windows)
     }
-    try await _normalizeLayoutReason(workspace: focus.workspace, windows: macosMinimizedWindowsContainer.children.filterIsInstance(of: Window.self))
-    try await validateStillPopups()
+    try await _normalizeLayoutReason(workspace: focus.workspace, windows: macosMinimizedWindowsContainer.children.filterIsInstance(of: Window.self).filter { scope.contains($0.app.pid) })
+    try await validateStillPopups(scope: scope)
 }
 
 @MainActor
-private func validateStillPopups() async throws {
+private func validateStillPopups(scope: RefreshScope) async throws {
     for node in macosPopupWindowsContainer.children {
         let popup = (node as! MacWindow)
+        if !scope.contains(popup.macApp.pid) { continue }
         let windowLevel = getWindowLevel(for: popup.windowId)
         if try await popup.isWindowHeuristic(windowLevel, .cancellable) {
             try await popup.relayoutWindow(on: focus.workspace, .cancellable)

@@ -24,6 +24,8 @@ extension Command {
 
 extension Command {
     var info: CmdStaticInfo { T.info }
+
+    var isWorkspaceSwitch: Bool { self is WorkspaceCommand || self is WorkspaceBackAndForthCommand }
 }
 
 extension Command {

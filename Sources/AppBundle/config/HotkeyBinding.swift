@@ -12,6 +12,7 @@ import HotKey
         key.isEnabled = false
     }
     hotkeys = [:]
+    WorkspaceHotkeyTap.shared.updateBindings([])
 }
 
 extension HotKey {
@@ -26,22 +27,68 @@ extension HotKey {
 }
 
 @MainActor var activeMode: String? = mainModeId
+
+@MainActor private let hotkeyBindingQueue: HotkeyBindingQueue = HotkeyBindingQueue { id, followsWorkspaceSwitch in
+    guard let mode = activeMode, let binding = config.modes[mode]?.bindings[id] else { return false }
+    broadcastEvent(.bindingTriggered(mode: mode, binding: binding.descriptionWithKeyNotation))
+    let commands = binding.commands
+    let isWorkspaceSwitch: Bool = if case .cmd(let command) = commands { command.isWorkspaceSwitch } else { false }
+    do {
+        try await runLightSession(
+            .hotkeyBinding,
+            .checkServerIsEnabledOrDie(),
+            preferCachedFocus: isWorkspaceSwitch,
+            synchronizeNativeFocus: !(isWorkspaceSwitch && followsWorkspaceSwitch),
+            forceNativeFocus: isWorkspaceSwitch && followsWorkspaceSwitch,
+            deferLayout: {
+                guard isWorkspaceSwitch, let next = hotkeyBindingQueue.next, let activeMode,
+                      case .cmd(let command)? = config.modes[activeMode]?.bindings[next]?.commands
+                else { return false }
+                return command.isWorkspaceSwitch
+            },
+        ) {
+            _ = await commands.run(.defaultEnv, .emptyStdin)
+        }
+        return isWorkspaceSwitch
+    } catch { return false }
+}
+
+@MainActor func triggerHotkeyBinding(_ id: String) {
+    signposter.emitEvent("hotkeyReceived", "binding: \(id, privacy: .public)")
+    hotkeyBindingQueue.enqueue(id)
+}
+
+/// Preserve input order across asynchronous AX reads. Consecutive workspace
+/// shortcuts in the same burst use the preceding command's logical destination;
+/// native activation can still be catching up. Every command runs, including
+/// relative switches, back-and-forth and mode changes.
+@MainActor final class HotkeyBindingQueue {
+    private var pending: [String] = []
+    var next: String? { pending.first }
+    private var running = false
+    private let run: @MainActor (String, Bool) async -> Bool
+
+    init(run: @escaping @MainActor (String, Bool) async -> Bool) { self.run = run }
+
+    func enqueue(_ id: String) {
+        pending.append(id)
+        guard !running else { return }
+        running = true
+        Task.startUnstructured { [self] in
+            var followsWorkspaceSwitch = false
+            while !pending.isEmpty {
+                followsWorkspaceSwitch = await run(pending.removeFirst(), followsWorkspaceSwitch)
+            }
+            running = false
+        }
+    }
+}
+
 @MainActor func activateMode_nonCancellable(_ targetMode: String?) async {
     let targetBindings = targetMode.flatMap { config.modes[$0] }?.bindings ?? [:]
     for binding in targetBindings.values where !hotkeys.keys.contains(binding.descriptionWithKeyCode) {
         hotkeys[binding.descriptionWithKeyCode] = HotKey(key: binding.keyCode, modifiers: binding.modifiers, keyDownHandler: {
-            Task.startUnstructured {
-                if let activeMode {
-                    broadcastEvent(.bindingTriggered(
-                        mode: activeMode,
-                        binding: binding.descriptionWithKeyNotation,
-                    ))
-                    try await runLightSession(.hotkeyBinding, .checkServerIsEnabledOrDie()) { () throws in
-                        _ = await config.modes[activeMode]?.bindings[binding.descriptionWithKeyCode]?.commands
-                            .run(.defaultEnv, .emptyStdin)
-                    }
-                }
-            }
+            triggerHotkeyBinding(binding.descriptionWithKeyCode)
         })
     }
     for (binding, key) in hotkeys {
@@ -49,6 +96,7 @@ extension HotKey {
     }
     let oldMode = activeMode
     activeMode = targetMode
+    WorkspaceHotkeyTap.shared.updateBindings(Array(targetBindings.values))
     if oldMode != targetMode {
         broadcastEvent(.modeChanged(mode: targetMode))
         _ = await config.onModeChanged.run(.defaultEnv, .emptyStdin)

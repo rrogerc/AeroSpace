@@ -9,12 +9,13 @@ enum GlobalObserver {
             return
         }
         let notifName = notification.name.rawValue
+        let scope = RefreshScope.app((notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier)
         Task.startUnstructured { @MainActor in
             if !TrayMenuModel.shared.isEnabled { return }
             if notifName == NSWorkspace.didActivateApplicationNotification.rawValue {
-                scheduleCancellableCompleteRefreshSession(.globalObserver(notifName), optimisticallyPreLayoutWorkspaces: true)
+                scheduleCancellableCompleteRefreshSession(.globalObserver(notifName), optimisticallyPreLayoutWorkspaces: true, scope: scope)
             } else {
-                scheduleCancellableCompleteRefreshSession(.globalObserver(notifName))
+                scheduleCancellableCompleteRefreshSession(.globalObserver(notifName), scope: scope)
             }
         }
     }

@@ -4,13 +4,14 @@ import Common
 @MainActor
 private var moveWithMouseTask: Task<(), any Error>? = nil
 
-func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
-    let windowId = ax.containingWindowId()
+func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, context: UnsafeMutableRawPointer?) {
+    let windowId = unsafe notificationWindowId(context) { ax.containingWindowId() }
     let notif = notif as String
+    let scope = RefreshScope.app(axTaskLocalAppThreadToken?.pid)
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         guard let windowId, let window = Window.get(byId: windowId), try await isManipulatedWithMouse(window) else {
-            scheduleCancellableCompleteRefreshSession(.ax(notif))
+            scheduleCancellableCompleteRefreshSession(.ax(notif), scope: scope)
             return
         }
         moveWithMouseTask?.cancel()

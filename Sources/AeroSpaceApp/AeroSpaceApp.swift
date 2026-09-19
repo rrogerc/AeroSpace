@@ -4,6 +4,14 @@ import SwiftUI
 // This file is shared between SPM and xcode project
 
 @main
+enum AeroSpaceEntryPoint {
+    @MainActor
+    static func main() {
+        if runNativeVisibilityRecoveryIfRequested() { return }
+        AeroSpaceApp.main()
+    }
+}
+
 struct AeroSpaceApp: App {
     @StateObject var viewModel = TrayMenuModel.shared
     @StateObject var messageModel = MessageModel.shared

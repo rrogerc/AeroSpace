@@ -60,8 +60,19 @@ private struct FrozenFocus: AeroAny, Equatable, Sendable {
 /// AEROSPACE_WORKSPACE env before accessing the global focus.
 @MainActor var focus: LiveFocus { _focus.live }
 
+@MainActor private var focusRevision: UInt64 = 0
+
+/// An AX reply may arrive after another command has already changed the logical focus.
+struct NativeFocusRefreshToken {
+    private let revision: UInt64
+
+    @MainActor init() { revision = focusRevision }
+    @MainActor var isCurrent: Bool { revision == focusRevision }
+}
+
 @MainActor func setFocus(to newFocus: LiveFocus) -> Bool {
     if _focus == newFocus.frozen { return true }
+    focusRevision &+= 1
     let oldFocus = focus
     // Normalize mruWindow when focus away from a workspace
     if oldFocus.workspace != newFocus.workspace {

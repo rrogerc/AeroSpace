@@ -1,5 +1,6 @@
 import Common
 import Foundation
+import os
 
 extension Thread {
     @discardableResult
@@ -13,33 +14,9 @@ extension Thread {
         action.perform(#selector(action.action), on: self, with: nil, waitUntilDone: false)
         return job
     }
-
-    func runInLoop<T>(
-        _ cm: CancellationMode,
-        _ body: @Sendable @escaping (RunLoopJob) throws -> T,
-    ) async throws -> T { // todo try to convert to typed throws
-        try checkCancellation(cm)
-        let job = RunLoopJob(cm)
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { cont in
-                // It's unsafe to implicitly cancel because cont.resume should be invoked exactly once
-                self.runInLoopAsync(job: job, autoCheckCancelled: false) { job in
-                    do {
-                        try job.checkCancellation()
-                        cont.resume(returning: try body(job))
-                    } catch {
-                        if cm == .nonCancellable { die() }
-                        cont.resume(throwing: error)
-                    }
-                }
-            }
-        } onCancel: {
-            job.cancel()
-        }
-    }
 }
 
-private final class RunLoopAction: NSObject, Sendable {
+final class RunLoopAction: NSObject, Sendable {
     private let _action: @Sendable (RunLoopJob) -> ()
     let job: RunLoopJob
     private let autoCheckCancelled: Bool
@@ -51,6 +28,7 @@ private final class RunLoopAction: NSObject, Sendable {
         _refreshSessionEvent = refreshSessionEvent
     }
     @objc func action() {
+        defer { job.complete() }
         if autoCheckCancelled && job.isCancelled { return }
         $refreshSessionEvent.withValue(_refreshSessionEvent) {
             _action(job)
@@ -59,22 +37,23 @@ private final class RunLoopAction: NSObject, Sendable {
 }
 
 final class RunLoopJob: Sendable, AeroAny {
-    // Alternative 1. In macOS 15, it's possible to use `Atomic<Bool>` from `Synchronization` module
-    // Alternative 2. https://github.com/apple/swift-atomics/tree/main but I don't want to add one more dependency just for
-    //                AtomicBool
-    nonisolated(unsafe) private var _isCancelled: Int32 = 0
-    var isCancelled: Bool { unsafe _isCancelled == 1 }
+    private struct State {
+        var isCancelled = false
+        var isComplete = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    var isCancelled: Bool { state.withLock { $0.isCancelled } }
+    var isComplete: Bool { state.withLock { $0.isComplete } }
     func cancel() {
         if cm == .nonCancellable { return }
-        while !isCancelled {
-            unsafe OSAtomicCompareAndSwapInt(0, 1, &_isCancelled)
-        }
+        state.withLock { $0.isCancelled = true }
     }
+    func complete() { state.withLock { $0.isComplete = true } }
 
     let cm: CancellationMode
     public init(_ cm: CancellationMode) { self.cm = cm }
 
-    static let cancelled: RunLoopJob = RunLoopJob(.cancellable).also { $0.cancel() }
+    static let cancelled: RunLoopJob = RunLoopJob(.cancellable).also { $0.cancel(); $0.complete() }
 
     func checkCancellation() throws {
         if cm == .cancellable && isCancelled {
