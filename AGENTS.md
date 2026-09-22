@@ -1,5 +1,3 @@
-# CLAUDE.md
-
 This is a **personal fork** of [AeroSpace](https://github.com/nikitabobko/AeroSpace) (the tiling WM).
 Remotes: `origin` = this fork (`rrogerc/AeroSpace`), `upstream` = `nikitabobko/AeroSpace`.
 
