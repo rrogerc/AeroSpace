@@ -35,8 +35,30 @@ func cachedNativeFocusedWindow(
         return
     }
     if nativeFocused?.windowId != lastKnownNativeFocusedWindowId {
-        _ = nativeFocused?.focusWindow()
+        if let nativeFocused, let destroyed = destroyedFocusedWindow(beforeMacosFallbackTo: nativeFocused) {
+            stayOnFocusedWorkspace(droppingDestroyed: destroyed)
+        } else {
+            _ = nativeFocused?.focusWindow()
+        }
         lastKnownNativeFocusedWindowId = nativeFocused?.windowId
     }
     (nativeFocused?.app as? MacApp)?.lastNativeFocusedWindowId = nativeFocused?.windowId
+}
+
+/// When the focused window is destroyed (e.g. its app quits), macOS activates some other app on its own.
+/// Following that app to an invisible workspace would be a workspace switch that nobody asked for
+@MainActor private func destroyedFocusedWindow(beforeMacosFallbackTo nativeFocused: Window) -> Window? {
+    guard let focused = focus.windowOrNil, focused != nativeFocused,
+          nativeFocused.visualWorkspace?.isVisible == false,
+          focused.isDestroyed // The last check, because it's a WindowServer request
+    else { return nil }
+    return focused
+}
+
+@MainActor private func stayOnFocusedWorkspace(droppingDestroyed destroyed: Window) {
+    let workspace = focus.workspace
+    destroyed.garbageCollect(skipClosedWindowsCache: false)
+    _ = workspace.focusWorkspace()
+    // Otherwise, macOS keeps the keyboard focus in a hidden window of the app it activated
+    focus.windowOrNil?.nativeFocus()
 }

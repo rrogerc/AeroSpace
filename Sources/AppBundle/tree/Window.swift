@@ -27,6 +27,9 @@ open class Window: TreeNode, Hashable {
     @MainActor
     func closeAxWindow() { die("Not implemented") }
 
+    @MainActor
+    func garbageCollect(skipClosedWindowsCache: Bool) { die("Not implemented") }
+
     public func hash(into hasher: inout Hasher) {
         hasher.combine(windowId)
     }
@@ -36,6 +39,8 @@ open class Window: TreeNode, Hashable {
     func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { false }
     func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { false } // todo replace with enum MacOsWindowNativeState { normal, fullscreen, invisible }
     var isHiddenInCorner: Bool { die("Not implemented") }
+    /// The window is definitely gone (e.g. its app quit). False when unknown
+    var isDestroyed: Bool { die("Not implemented") }
     @MainActor func nativeFocus() { die("Not implemented") }
     func getAxRect(_ cm: CancellationMode) async throws -> Rect? { die("Not implemented") }
     func getCenter(_ cm: CancellationMode) async throws -> CGPoint? { try await getAxRect(cm)?.center }

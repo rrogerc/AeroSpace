@@ -5,8 +5,10 @@ final class TestWindow: Window, CustomStringConvertible {
     private var _rect: Rect?
     var isMacosFullscreenForTest = false
     var isHiddenInCornerForTest = false
+    var isDestroyedForTest = false
 
     override var isHiddenInCorner: Bool { isHiddenInCornerForTest }
+    override var isDestroyed: Bool { isDestroyedForTest }
 
     @MainActor
     private init(_ id: UInt32, _ parent: NonLeafTreeNodeObject, _ adaptiveWeight: CGFloat, _ rect: Rect?) {
@@ -32,6 +34,10 @@ final class TestWindow: Window, CustomStringConvertible {
 
     override func closeAxWindow() {
         unbindFromParent()
+    }
+
+    override func garbageCollect(skipClosedWindowsCache: Bool) {
+        if isBound { unbindFromParent() }
     }
 
     override func getTitle(_ cm: CancellationMode) async throws -> String { description }

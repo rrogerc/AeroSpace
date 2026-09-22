@@ -77,7 +77,7 @@ final class MacWindow: Window {
     // skipClosedWindowsCache is an optimization when it's definitely not necessary to cache closed window.
     //                        If you are unsure, it's better to pass `false`
     @MainActor
-    func garbageCollect(skipClosedWindowsCache: Bool) {
+    override func garbageCollect(skipClosedWindowsCache: Bool) {
         if MacWindow.allWindowsMap.removeValue(forKey: windowId) == nil {
             return
         }
@@ -113,6 +113,8 @@ final class MacWindow: Window {
     @MainActor override func nativeFocus() {
         macApp.nativeFocus(windowId)
     }
+
+    override var isDestroyed: Bool { windowServerWindowExists(windowId) == false }
 
     override func closeAxWindow() {
         garbageCollect(skipClosedWindowsCache: true)

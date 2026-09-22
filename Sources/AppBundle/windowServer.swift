@@ -49,6 +49,12 @@ func getWindowServerWindow(_ windowId: UInt32, pid: Int32) -> WindowServerWindow
     return info
 }
 
+/// nil if WindowServer can't be queried. Unlike AX, a busy or quitting app can't delay or fake the answer
+func windowServerWindowExists(_ windowId: UInt32) -> Bool? {
+    guard let records = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowId) as? [[String: Any]] else { return nil }
+    return records.contains { ($0[kCGWindowNumber as String] as? UInt32) == windowId }
+}
+
 func getOnScreenWindowServerWindows() -> [WindowServerWindowInfo]? {
     let state = signposter.beginInterval("observeNativeWindowOrder")
     defer { signposter.endInterval("observeNativeWindowOrder", state) }

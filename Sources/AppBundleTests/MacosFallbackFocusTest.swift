@@ -1,0 +1,96 @@
+@testable import AppBundle
+import Common
+import XCTest
+
+/// When the focused window is destroyed (e.g. cmd-q), macOS activates some other app on its own
+@MainActor
+final class MacosFallbackFocusTest: XCTestCase {
+    override func setUp() async throws {
+        setUpWorkspacesForTests()
+        updateFocusCache(nil)
+    }
+
+    func testStaysOnWorkspaceWhenMacosFallsBackToAnotherWorkspace() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let quit = TestWindow.new(id: 2, parent: current.rootTilingContainer)
+        let fallback = TestWindow.new(id: 3, parent: other.rootTilingContainer)
+        focusNatively(quit)
+
+        quit.isDestroyedForTest = true
+        updateFocusCache(fallback)
+
+        assertEquals(focus.workspace, current)
+        assertEquals(focus.windowOrNil?.windowId, 1)
+        assertTrue(current.isVisible)
+        assertFalse(other.isVisible)
+        assertFalse(quit.isBound) // Dropped right away instead of waiting for the app to exit
+        assertEquals(TestApp.shared.focusedWindow?.windowId, 1) // macOS focus is handed back to this workspace
+    }
+
+    func testStaysOnWorkspaceThatBecameEmpty() {
+        let current = Workspace.get(byName: "current")
+        let quit = TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let fallback = TestWindow.new(id: 2, parent: Workspace.get(byName: "other").rootTilingContainer)
+        focusNatively(quit)
+
+        quit.isDestroyedForTest = true
+        updateFocusCache(fallback)
+
+        assertEquals(focus.workspace, current)
+        assertNil(focus.windowOrNil)
+        assertFalse(quit.isBound)
+    }
+
+    func testLaterRefreshesDoNotFollowTheFallbackButFollowNewFocus() {
+        let current = Workspace.get(byName: "current")
+        let quit = TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let fallback = TestWindow.new(id: 2, parent: Workspace.get(byName: "other").rootTilingContainer)
+        let third = Workspace.get(byName: "third")
+        let cmdTabTarget = TestWindow.new(id: 3, parent: third.rootTilingContainer)
+        focusNatively(quit)
+        quit.isDestroyedForTest = true
+        updateFocusCache(fallback)
+
+        updateFocusCache(fallback) // The next refresh session reports the same native focus
+        assertEquals(focus.workspace, current)
+
+        updateFocusCache(cmdTabTarget)
+        assertEquals(focus.workspace, third)
+        assertEquals(focus.windowOrNil?.windowId, 3)
+    }
+
+    func testFollowsNativeFocusToAnotherWorkspaceWhileFocusedWindowIsAlive() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        let focused = TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let cmdTabTarget = TestWindow.new(id: 2, parent: other.rootTilingContainer)
+        focusNatively(focused)
+
+        updateFocusCache(cmdTabTarget)
+
+        assertEquals(focus.workspace, other)
+        assertEquals(focus.windowOrNil?.windowId, 2)
+        assertTrue(focused.isBound)
+    }
+
+    func testFollowsMacosFallbackWithinTheSameWorkspace() {
+        let current = Workspace.get(byName: "current")
+        TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let quit = TestWindow.new(id: 2, parent: current.rootTilingContainer)
+        focusNatively(quit)
+
+        quit.isDestroyedForTest = true
+        updateFocusCache(TestApp.shared.windows.first { $0.windowId == 1 })
+
+        assertEquals(focus.workspace, current)
+        assertEquals(focus.windowOrNil?.windowId, 1)
+    }
+
+    private func focusNatively(_ window: TestWindow) {
+        assertTrue(window.focusWindow())
+        window.nativeFocus()
+        updateFocusCache(window)
+    }
+}
