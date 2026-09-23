@@ -15,15 +15,10 @@ extension TilingContainer {
     @MainActor fileprivate func unbindEmptyAndAutoFlatten(forceFlatten: Bool) {
         if let child = children.singleOrNil(), config.enableNormalizationFlattenContainers || forceFlatten, child is TilingContainer || !isRootContainer {
             child.unbindFromParent()
-            let mru = parent?.mostRecentChild
-            let previousBinding = unbindFromParent()
-            child.bind(to: previousBinding.parent, adaptiveWeight: previousBinding.adaptiveWeight, index: previousBinding.index)
+            // Binding would make the child the most recent up to the workspace, although closing its sibling focused
+            // nothing. E.g. a fullscreen window in another branch would stop being the most recent and leave fullscreen
+            replace(with: child)
             (child as? TilingContainer)?.unbindEmptyAndAutoFlatten(forceFlatten: forceFlatten)
-            if mru != self {
-                mru?.markAsMostRecentChild()
-            } else {
-                child.markAsMostRecentChild()
-            }
         } else {
             for child in children {
                 (child as? TilingContainer)?.unbindEmptyAndAutoFlatten(forceFlatten: forceFlatten)

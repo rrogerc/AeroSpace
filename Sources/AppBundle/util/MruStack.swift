@@ -15,6 +15,19 @@ final class MruStack<T: Equatable>: Sequence {
         mruNode = Node(value, mruNode)
     }
 
+    /// Puts newValue where oldValue is, without changing the order of the others. Returns whether oldValue was found
+    func replace(_ oldValue: T, with newValue: T) -> Bool {
+        var current = mruNode
+        while let cur = current {
+            if cur.value == oldValue {
+                cur.value = newValue
+                return true
+            }
+            current = cur.next
+        }
+        return false
+    }
+
     @discardableResult
     func remove(_ value: T) -> Bool {
         var prev: Node<T>? = nil
@@ -52,7 +65,7 @@ struct MruStackIterator<T: Equatable>: IteratorProtocol {
 
 private final class Node<T: Equatable> {
     var next: Node<T>? = nil
-    let value: T
+    var value: T
 
     init(_ value: T, _ next: Node<T>?) {
         self.value = value

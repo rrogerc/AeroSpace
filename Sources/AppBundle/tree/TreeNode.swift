@@ -120,6 +120,23 @@ open class TreeNode: Equatable, AeroAny {
         _children.swapAt(i, j)
     }
 
+    /// Puts newNode, which must be unbound, where this node is: at its index, with its weight and its place in the MRU
+    /// order. Unlike unbinding this node and binding newNode, doesn't make anything the most recent up to the workspace
+    @MainActor
+    func replace(with newNode: TreeNode) {
+        guard let _parent else { die("\(self) isn't bound") }
+        check(newNode._parent == nil, "\(newNode) is already bound")
+        _ = getChildParentRelation(child: newNode, parent: _parent) // Side effect: verify relation
+        let index = _parent._children.firstIndex(of: self) ?? dieT("Can't find child in its parent")
+        _parent._children[index] = newNode
+        check(_parent._mruChildren.replace(self, with: newNode))
+        newNode._parent = _parent
+        newNode.adaptiveWeight = adaptiveWeight
+        newNode.unboundStacktrace = nil
+        self._parent = nil
+        unboundStacktrace = getStringStacktrace()
+    }
+
     var mruChildren: MruStack<TreeNode> { _mruChildren }
 
     @discardableResult

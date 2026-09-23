@@ -176,6 +176,23 @@ final class DwindleTest: XCTestCase {
         assertEquals(try await rect(of: 2)?.width, 1010)
     }
 
+    func testClosingAWindowDoesntEndFullscreenOfAnotherOne() async throws {
+        let workspace = Workspace.get(byName: name)
+        let window1 = try await openWindow(1, in: workspace)
+        for id: UInt32 in 2 ... 4 {
+            try await openWindow(id, in: workspace)
+        }
+        assertEquals(window1.focusWindow(), true)
+        await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+
+        // The split of 3 and 4 goes away, which must not make 3 the most recent window
+        Window.get(byId: 4).orDie().closeAxWindow()
+        try await workspace.layoutWorkspace()
+        assertEquals(workspace.rootTilingContainer.layoutDescription, .h_tiles([.window(1), .v_tiles([.window(2), .window(3)])]))
+        assertEquals(workspace.mostRecentWindowRecursive?.windowId, 1)
+        assertEquals(window1.isFullscreen, true)
+    }
+
     func testWithoutPreserveSplitSplitsFollowTheirShape() async throws {
         config.dwindle.preserveSplit = false
         let workspace = Workspace.get(byName: name)
