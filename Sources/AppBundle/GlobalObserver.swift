@@ -2,6 +2,8 @@ import AppKit
 import Common
 
 enum GlobalObserver {
+    @MainActor private static var runningApplicationsObservation: NSKeyValueObservation? = nil
+
     private static func onNotif(_ notification: Notification) {
         // Third line of defence against lock screen window. See: closedWindowsCache
         // Second and third lines of defence are technically needed only to avoid potential flickering
@@ -53,6 +55,18 @@ enum GlobalObserver {
         nc.addObserver(forName: NSWorkspace.didUnhideApplicationNotification, object: nil, queue: .main, using: onNotif)
         nc.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main, using: onNotif)
         nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main, using: onNotif)
+        // Some apps (e.g. Clock) quit without didTerminateApplicationNotification, but they still leave runningApplications.
+        // Otherwise, their dead windows stay in the tree until something else refreshes
+        runningApplicationsObservation = NSWorkspace.shared.observe(\.runningApplications, options: [.old, .new]) { _, change in
+            let stillRunning = Set((change.newValue ?? []).map(\.processIdentifier))
+            let quit = Set((change.oldValue ?? []).filter { $0.bundleIdentifier != lockScreenAppBundleId }.map(\.processIdentifier))
+                .subtracting(stillRunning)
+            if quit.isEmpty { return }
+            Task.startUnstructured { @MainActor in
+                if !TrayMenuModel.shared.isEnabled { return }
+                scheduleCancellableCompleteRefreshSession(.globalObserver("runningApplicationsRemoved"), scope: .apps(quit))
+            }
+        }
 
         NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
             // todo reduce number of refreshSession in the callback
