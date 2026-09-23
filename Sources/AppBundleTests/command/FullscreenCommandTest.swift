@@ -53,6 +53,52 @@ final class FullscreenCommandTest: XCTestCase {
         assertEquals(fullscreenGaps, [0, 0, 0, 1])
     }
 
+    func testFullscreenDoesNothingForTheOnlyTilingWindow() async {
+        let workspace = Workspace.get(byName: name)
+        let window = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
+        TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer) // Floating windows don't count
+        assertEquals(window.focusWindow(), true)
+
+        let result = await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 0)
+        assertEquals(result.stderr, ["The window already takes up the whole workspace. Tip: use --fail-if-noop to exit with non-zero code"])
+        assertEquals(window.isFullscreen, false)
+
+        let failIfNoopResult = await parseCommand("fullscreen on --fail-if-noop").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(failIfNoopResult.exitCode.rawValue, 2)
+        assertEquals(window.isFullscreen, false)
+    }
+
+    func testFullscreenWithWidthOrNoOuterGapsWorksForTheOnlyTilingWindow() async {
+        let window = TestWindow.new(id: 1, parent: Workspace.get(byName: name).rootTilingContainer)
+        assertEquals(window.focusWindow(), true)
+
+        for command in ["fullscreen --width 0.66", "fullscreen --no-outer-gaps"] {
+            let result = await parseCommand(command).cmdOrDie.run(.defaultEnv, .emptyStdin)
+            assertEquals(result.exitCode.rawValue, 0, additionalMsg: command)
+            assertEquals(window.isFullscreen, true, additionalMsg: command)
+            await parseCommand("fullscreen off").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        }
+    }
+
+    func testFullscreenOffWorksForTheOnlyTilingWindow() async {
+        let window = TestWindow.new(id: 1, parent: Workspace.get(byName: name).rootTilingContainer)
+        assertEquals(window.focusWindow(), true)
+        window.isFullscreen = true // E.g. the window was fullscreened before the other windows closed
+
+        let result = await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 0)
+        assertEquals(window.isFullscreen, false)
+    }
+
+    func testFullscreenWorksForTheOnlyFloatingWindow() async {
+        let window = TestWindow.new(id: 1, parent: Workspace.get(byName: name).floatingWindowsContainer)
+        assertEquals(window.focusWindow(), true)
+
+        await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(window.isFullscreen, true)
+    }
+
     /// Distances from the window to the left, top, right, and bottom edges of the monitor
     private func edgeGaps(_ window: Window) async throws -> [CGFloat] {
         let rect = try await window.getAxRect(.nonCancellable).orDie()

@@ -25,6 +25,16 @@ struct FullscreenCommand: Command {
                     return .succ(io.err(msg))
             }
         }
+        // The only tiling window already takes up the whole workspace. Plain fullscreen wouldn't change how it looks,
+        // it would only leave the window in a fullscreen mode that the next fullscreen toggle (e.g. --width) turns off
+        let isOnlyTilingWindow = target.workspace.rootTilingContainer.allLeafWindowsRecursive == [window]
+        if newState && args.width == nil && !args.noOuterGaps && isOnlyTilingWindow {
+            return switch args.failIfNoop {
+                case true: .fail
+                case false:
+                    .succ(io.err("The window already takes up the whole workspace. Tip: use --fail-if-noop to exit with non-zero code"))
+            }
+        }
         window.isFullscreen = newState
         window.noOuterGapsInFullscreen = args.noOuterGaps
         window.fullscreenWidth = args.width.map { CGFloat($0) }
