@@ -35,30 +35,41 @@ func cachedNativeFocusedWindow(
         return
     }
     if nativeFocused?.windowId != lastKnownNativeFocusedWindowId {
-        if let nativeFocused, let destroyed = destroyedFocusedWindow(beforeMacosFallbackTo: nativeFocused) {
-            stayOnFocusedWorkspace(droppingDestroyed: destroyed)
-        } else {
-            _ = nativeFocused?.focusWindow()
+        if let nativeFocused {
+            if nativeFocused.visualWorkspace?.isVisible == false && focusedWindowDied(beforeMacosFocused: nativeFocused) {
+                stayOnFocusedWorkspace()
+            } else {
+                _ = nativeFocused.focusWindow()
+            }
+            focusedWindowDeathDate = nil // macOS has reacted to the death
         }
         lastKnownNativeFocusedWindowId = nativeFocused?.windowId
     }
     (nativeFocused?.app as? MacApp)?.lastNativeFocusedWindowId = nativeFocused?.windowId
 }
 
-/// When the focused window is destroyed (e.g. its app quits), macOS activates some other app on its own.
+/// When the focused window dies (e.g. its app quits), macOS activates some other app on its own.
 /// Following that app to an invisible workspace would be a workspace switch that nobody asked for
-@MainActor private func destroyedFocusedWindow(beforeMacosFallbackTo nativeFocused: Window) -> Window? {
-    guard let focused = focus.windowOrNil, focused != nativeFocused,
-          nativeFocused.visualWorkspace?.isVisible == false,
-          focused.isDestroyed // The last check, because it's a WindowServer request
-    else { return nil }
-    return focused
+@MainActor var focusedWindowDeathDate: Date? = nil
+
+/// Must be called before the dying window leaves the tree
+@MainActor func onWindowDied(_ window: Window) {
+    if focus.windowOrNil == window { focusedWindowDeathDate = .now }
 }
 
-@MainActor private func stayOnFocusedWorkspace(droppingDestroyed destroyed: Window) {
-    let workspace = focus.workspace
-    destroyed.garbageCollect(skipClosedWindowsCache: false)
-    _ = workspace.focusWorkspace()
+/// AX may give up on a quitting app before macOS activates the next one, so the dead window may already be gone.
+/// Or only WindowServer knows about the death yet. Then the dead window is garbage collected here
+@MainActor private func focusedWindowDied(beforeMacosFocused nativeFocused: Window) -> Bool {
+    if let date = focusedWindowDeathDate, date.distance(to: .now) < 1 { return true }
+    guard let focused = focus.windowOrNil, focused != nativeFocused,
+          focused.isDestroyed // The last check, because it's a WindowServer request
+    else { return false }
+    focused.garbageCollect(skipClosedWindowsCache: false)
+    return true
+}
+
+@MainActor private func stayOnFocusedWorkspace() {
+    _ = focus.workspace.focusWorkspace()
     // Otherwise, macOS keeps the keyboard focus in a hidden window of the app it activated
     focus.windowOrNil?.nativeFocus()
 }

@@ -38,6 +38,7 @@ func setUpWorkspacesForTests() {
 
     TestApp.shared.focusedWindow = nil
     TestApp.shared.windows = []
+    focusedWindowDeathDate = nil
 }
 
 extension ParsedCmd {

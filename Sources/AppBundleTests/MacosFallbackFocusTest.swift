@@ -88,6 +88,55 @@ final class MacosFallbackFocusTest: XCTestCase {
         assertEquals(focus.windowOrNil?.windowId, 1)
     }
 
+    /// Slow Roads: AX gives up on the quitting app, so its window is collected before macOS activates the next app
+    func testStaysWhenTheDeadWindowWasCollectedBeforeMacosFallsBack() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let quit = TestWindow.new(id: 2, parent: current.rootTilingContainer)
+        let fallback = TestWindow.new(id: 3, parent: other.rootTilingContainer)
+        focusNatively(quit)
+
+        updateFocusCache(nil) // The quitting app no longer answers AX
+        quit.garbageCollect(skipClosedWindowsCache: false)
+        updateFocusCache(fallback)
+
+        assertEquals(focus.workspace, current)
+        assertEquals(focus.windowOrNil?.windowId, 1)
+        assertFalse(other.isVisible)
+        assertEquals(TestApp.shared.focusedWindow?.windowId, 1)
+    }
+
+    func testFollowsTheNextNativeFocusChangeAfterMacosFellBack() {
+        let current = Workspace.get(byName: "current")
+        let quit = TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let fallback = TestWindow.new(id: 2, parent: Workspace.get(byName: "other").rootTilingContainer)
+        let third = Workspace.get(byName: "third")
+        let cmdTabTarget = TestWindow.new(id: 3, parent: third.rootTilingContainer)
+        focusNatively(quit)
+        quit.garbageCollect(skipClosedWindowsCache: false)
+        updateFocusCache(fallback)
+        assertEquals(focus.workspace, current)
+
+        updateFocusCache(cmdTabTarget)
+
+        assertEquals(focus.workspace, third)
+    }
+
+    func testDeathOfUnfocusedWindowDoesNotStopFollowing() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        let focused = TestWindow.new(id: 1, parent: current.rootTilingContainer)
+        let unfocused = TestWindow.new(id: 2, parent: current.rootTilingContainer)
+        let cmdTabTarget = TestWindow.new(id: 3, parent: other.rootTilingContainer)
+        focusNatively(focused)
+
+        unfocused.garbageCollect(skipClosedWindowsCache: false)
+        updateFocusCache(cmdTabTarget)
+
+        assertEquals(focus.workspace, other)
+    }
+
     private func focusNatively(_ window: TestWindow) {
         assertTrue(window.focusWindow())
         window.nativeFocus()

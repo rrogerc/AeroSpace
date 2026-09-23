@@ -37,6 +37,7 @@ final class TestWindow: Window, CustomStringConvertible {
     }
 
     override func garbageCollect(skipClosedWindowsCache: Bool) {
+        onWindowDied(self)
         if isBound { unbindFromParent() }
     }
 

@@ -78,6 +78,7 @@ final class MacWindow: Window {
     //                        If you are unsure, it's better to pass `false`
     @MainActor
     override func garbageCollect(skipClosedWindowsCache: Bool) {
+        onWindowDied(self)
         if MacWindow.allWindowsMap.removeValue(forKey: windowId) == nil {
             return
         }
