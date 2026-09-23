@@ -8,6 +8,13 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
 - **`fullscreen --width <0..1>`** — centered partial-width fullscreen (e.g. `aerospace fullscreen --width 0.66`).
   Touches `Sources/Common/cmdArgs/impl/FullscreenCmdArgs.swift`, `Sources/AppBundle/command/impl/FullscreenCommand.swift`,
   `Sources/AppBundle/tree/Window.swift` (`fullscreenWidth`), `Sources/AppBundle/layout/layoutRecursive.swift` (`layoutFullscreen`).
+- **Even gaps, and fullscreen lines up with tiling** — upstream's `height - 1` workaround now only applies to windows
+  that reach the bottom of the visible area (no bottom outer gap, or `fullscreen --no-outer-gaps`). Tiled windows get
+  the same gap on all four edges instead of 1px more at the bottom, and fullscreen uses the same height as tiling, so
+  it no longer moves the bottom edge by 1px (`layoutHeight` in `Sources/AppBundle/layout/layoutRecursive.swift`).
+  Plain `fullscreen` (no `--width`/`--no-outer-gaps`) does nothing for the only tiling window of a workspace, which
+  already takes up the whole workspace (`Sources/AppBundle/command/impl/FullscreenCommand.swift`,
+  `docs/aerospace-fullscreen.adoc`). Tests: `FullscreenCommandTest`.
 - **Cmd+Q never switches workspaces** — when the focused window or its app goes away, macOS activates the previous app
   on its own; AeroSpace now stays on the workspace instead of following it (`isMacosFallback` in
   `Sources/AppBundle/focusCache.swift`). Relies on window discovery: after each refresh, apps that show windows
