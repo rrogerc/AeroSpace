@@ -1,3 +1,4 @@
+import AppKit
 import Common
 
 struct MoveNodeToWorkspaceCommand: Command {
@@ -29,7 +30,15 @@ struct MoveNodeToWorkspaceCommand: Command {
 }
 
 @MainActor
-func moveWindowToWorkspace(_ window: Window, _ targetWorkspace: Workspace, _ io: CmdIo, focusFollowsWindow: Bool, failIfNoop: Bool, index: Int = INDEX_BIND_LAST) -> BinaryExitCode {
+func moveWindowToWorkspace(
+    _ window: Window,
+    _ targetWorkspace: Workspace,
+    _ io: CmdIo,
+    focusFollowsWindow: Bool,
+    failIfNoop: Bool,
+    index: Int = INDEX_BIND_LAST,
+    dwindleFocalPoint: CGPoint? = nil,
+) -> BinaryExitCode {
     if window.nodeWorkspace == targetWorkspace {
         return switch failIfNoop {
             case true: .fail
@@ -38,8 +47,8 @@ func moveWindowToWorkspace(_ window: Window, _ targetWorkspace: Workspace, _ io:
         }
     }
     if !window.isFloating && targetWorkspace.isDwindle {
-        // Like a new window: split the most recent window of the target workspace
-        let data = dwindleBindingDataForNewTilingWindow(targetWorkspace)
+        // Like a new window: split the most recent window of the target workspace, or the window at the focal point
+        let data = dwindleBindingDataForNewTilingWindow(targetWorkspace, focalPoint: dwindleFocalPoint)
         window.bind(to: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
     } else {
         let targetContainer: NonLeafTreeNodeObject = window.isFloating

@@ -23,6 +23,13 @@ Move the focused window in the given direction. See the "Examples" section for m
 
 Deprecated name: `move-through`
 
+In the xref:guide.adoc#dwindle-layout[dwindle layout], `move` works like Hyprland's:
+the window leaves its split, and splits the window just past its edge, taking the half on the side it came from.
+Moving toward the other half of its own split swaps the two halves.
+Inside an accordion, moving along the accordion reorders its windows, and moving across it takes the window out.
+At the edge of the workspace, `--boundaries` and `--boundaries-action` apply as usual,
+and `create-implicit-container` makes the window one half of the workspace.
+
 // =========================================================== Options
 include::./util/conditional-options-header.adoc[]
 

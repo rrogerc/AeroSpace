@@ -204,9 +204,3 @@ private func parsedCommand(_ command: String) -> DwindleCommand? {
 private func parsedMessage(_ command: String) -> DwindleMessage? {
     parsedCommand(command)?.args.message.val
 }
-
-@MainActor
-private func runCommand(_ command: String) async {
-    let result = await parseCommand(command).cmdOrDie.run(.defaultEnv, .emptyStdin)
-    assertEquals(result.exitCode.rawValue, 0, additionalMsg: "\(command): \(result.stderr)")
-}

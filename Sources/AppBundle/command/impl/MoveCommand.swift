@@ -21,6 +21,9 @@ struct MoveCommand: Command {
         switch currentWindow.windowParentCases {
             case .unbound: return .fail
             case .tilingContainer(let parent):
+                if let workspace = currentWindow.nodeWorkspace, workspace.isDwindle {
+                    return dwindleMove(currentWindow, workspace, direction, args, io)
+                }
                 guard let indexOfCurrent = currentWindow.ownIndex else { return .fail(io.err(bugPrompt())) }
                 let indexOfSiblingTarget = indexOfCurrent + direction.focusOffset
                 if parent.orientation == direction.orientation && parent.children.indices.contains(indexOfSiblingTarget) {
@@ -129,7 +132,7 @@ private let moveOutMacosUnconventionalWindow = "moving macOS fullscreen, minimiz
     }
 }
 
-@MainActor private func createImplicitContainerAndMoveWindow(
+@MainActor func createImplicitContainerAndMoveWindow(
     _ window: Window,
     _ workspace: Workspace,
     _ direction: CardinalDirection,
