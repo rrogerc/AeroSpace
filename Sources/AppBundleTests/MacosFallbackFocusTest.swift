@@ -137,6 +137,43 @@ final class MacosFallbackFocusTest: XCTestCase {
         assertEquals(focus.workspace, other)
     }
 
+    /// Slow Roads again: AeroSpace never got to know the game's window, so the workspace looked empty
+    func testStaysWhenTheFrontmostAppQuitWithoutAeroSpaceKnowingItsWindows() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        let fallback = TestWindow.new(id: 1, parent: other.rootTilingContainer)
+        let third = Workspace.get(byName: "third")
+        let cmdTabTarget = TestWindow.new(id: 2, parent: third.rootTilingContainer)
+        assertTrue(current.focusWorkspace())
+        let game: pid_t = 42
+        frontmostPidForTests = game
+        updateFocusCache(nil) // The game doesn't answer AX
+
+        terminatedPidsForTests = [game]
+        frontmostPidForTests = TestApp.shared.pid
+        updateFocusCache(fallback)
+
+        assertEquals(focus.workspace, current)
+        assertFalse(other.isVisible)
+
+        updateFocusCache(cmdTabTarget)
+        assertEquals(focus.workspace, third)
+    }
+
+    func testFollowsNativeFocusFromAppThatIsStillRunning() {
+        let current = Workspace.get(byName: "current")
+        let other = Workspace.get(byName: "other")
+        let cmdTabTarget = TestWindow.new(id: 1, parent: other.rootTilingContainer)
+        assertTrue(current.focusWorkspace())
+        frontmostPidForTests = 42 // E.g. Finder with only the desktop, or an app whose last window was closed
+        updateFocusCache(nil)
+
+        frontmostPidForTests = TestApp.shared.pid
+        updateFocusCache(cmdTabTarget)
+
+        assertEquals(focus.workspace, other)
+    }
+
     private func focusNatively(_ window: TestWindow) {
         assertTrue(window.focusWindow())
         window.nativeFocus()

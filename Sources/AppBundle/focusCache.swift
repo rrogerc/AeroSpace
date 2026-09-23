@@ -1,4 +1,5 @@
 import AppKit
+import Common
 
 @MainActor private var lastKnownNativeFocusedWindowId: UInt32? = nil
 
@@ -36,7 +37,7 @@ func cachedNativeFocusedWindow(
     }
     if nativeFocused?.windowId != lastKnownNativeFocusedWindowId {
         if let nativeFocused {
-            if nativeFocused.visualWorkspace?.isVisible == false && focusedWindowDied(beforeMacosFocused: nativeFocused) {
+            if nativeFocused.visualWorkspace?.isVisible == false && isMacosFallback(to: nativeFocused) {
                 stayOnFocusedWorkspace()
             } else {
                 _ = nativeFocused.focusWindow()
@@ -45,10 +46,11 @@ func cachedNativeFocusedWindow(
         }
         lastKnownNativeFocusedWindowId = nativeFocused?.windowId
     }
+    lastSyncedFrontmostPid = frontmostPid
     (nativeFocused?.app as? MacApp)?.lastNativeFocusedWindowId = nativeFocused?.windowId
 }
 
-/// When the focused window dies (e.g. its app quits), macOS activates some other app on its own.
+/// When the focused window or its app dies (e.g. cmd-q), macOS activates some other app on its own.
 /// Following that app to an invisible workspace would be a workspace switch that nobody asked for
 @MainActor var focusedWindowDeathDate: Date? = nil
 
@@ -57,15 +59,30 @@ func cachedNativeFocusedWindow(
     if focus.windowOrNil == window { focusedWindowDeathDate = .now }
 }
 
-/// AX may give up on a quitting app before macOS activates the next one, so the dead window may already be gone.
-/// Or only WindowServer knows about the death yet. Then the dead window is garbage collected here
-@MainActor private func focusedWindowDied(beforeMacosFocused nativeFocused: Window) -> Bool {
+/// The app that was frontmost the last time native focus was synced
+@MainActor private var lastSyncedFrontmostPid: pid_t? = nil
+@MainActor var frontmostPidForTests: pid_t? = nil
+@MainActor var terminatedPidsForTests: Set<pid_t> = []
+
+@MainActor private var frontmostPid: pid_t? {
+    isUnitTest ? frontmostPidForTests : NSWorkspace.shared.frontmostApplication?.processIdentifier
+}
+
+@MainActor private func isTerminated(_ pid: pid_t) -> Bool {
+    isUnitTest ? terminatedPidsForTests.contains(pid) : NSRunningApplication(processIdentifier: pid)?.isTerminated ?? true
+}
+
+@MainActor private func isMacosFallback(to nativeFocused: Window) -> Bool {
+    // AX may give up on a quitting app before macOS activates the next one, so the dead window may already be gone
     if let date = focusedWindowDeathDate, date.distance(to: .now) < 1 { return true }
-    guard let focused = focus.windowOrNil, focused != nativeFocused,
-          focused.isDestroyed // The last check, because it's a WindowServer request
-    else { return false }
-    focused.garbageCollect(skipClosedWindowsCache: false)
-    return true
+    // Or only WindowServer knows about the death yet. Then the dead window is garbage collected here
+    if let focused = focus.windowOrNil, focused != nativeFocused, focused.isDestroyed {
+        focused.garbageCollect(skipClosedWindowsCache: false)
+        return true
+    }
+    // Or AeroSpace never knew the quitting app's windows (e.g. a game that refused AX while it was loading)
+    if let pid = lastSyncedFrontmostPid, pid != nativeFocused.app.pid, isTerminated(pid) { return true }
+    return false
 }
 
 @MainActor private func stayOnFocusedWorkspace() {
