@@ -75,6 +75,7 @@ final class FullscreenCommandTest: XCTestCase {
 
         for command in ["fullscreen --width 0.66", "fullscreen --no-outer-gaps"] {
             let result = await parseCommand(command).cmdOrDie.run(.defaultEnv, .emptyStdin)
+            exitPointlessFullscreen()
             assertEquals(result.exitCode.rawValue, 0, additionalMsg: command)
             assertEquals(window.isFullscreen, true, additionalMsg: command)
             await parseCommand("fullscreen off").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -84,10 +85,43 @@ final class FullscreenCommandTest: XCTestCase {
     func testFullscreenOffWorksForTheOnlyTilingWindow() async {
         let window = TestWindow.new(id: 1, parent: Workspace.get(byName: name).rootTilingContainer)
         assertEquals(window.focusWindow(), true)
-        window.isFullscreen = true // E.g. the window was fullscreened before the other windows closed
+        await parseCommand("fullscreen --width 0.66").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(window.isFullscreen, true)
 
         let result = await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertEquals(result.exitCode.rawValue, 0)
+        assertEquals(window.isFullscreen, false)
+    }
+
+    func testFullscreenEndsWhenTheOtherWindowsClose() async {
+        let workspace = Workspace.get(byName: name)
+        let window = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
+        let otherWindow = TestWindow.new(id: 2, parent: workspace.rootTilingContainer)
+        assertEquals(window.focusWindow(), true)
+        await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        exitPointlessFullscreen()
+        assertEquals(window.isFullscreen, true)
+
+        otherWindow.closeAxWindow()
+        exitPointlessFullscreen()
+        assertEquals(window.isFullscreen, false)
+
+        // So the next toggle centers the window instead of turning fullscreen off
+        await parseCommand("fullscreen --width 0.66").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(window.isFullscreen, true)
+        assertEquals(window.fullscreenWidth, 0.66)
+    }
+
+    func testFullscreenEndsWhenTheWindowMovesToAnEmptyWorkspace() async {
+        let workspace = Workspace.get(byName: name)
+        let window = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
+        TestWindow.new(id: 2, parent: workspace.rootTilingContainer)
+        assertEquals(window.focusWindow(), true)
+        await parseCommand("fullscreen").cmdOrDie.run(.defaultEnv, .emptyStdin)
+
+        await parseCommand("move-node-to-workspace empty").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(window.nodeWorkspace?.name, "empty")
+        exitPointlessFullscreen()
         assertEquals(window.isFullscreen, false)
     }
 

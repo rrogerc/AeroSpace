@@ -24,6 +24,7 @@ aerospace fullscreen [-h|--help] off [--window-id <window-id>] [--fail-if-noop]
 Switching to a different tiling window within the same workspace while the current focused window is in fullscreen mode results in the fullscreen window exiting fullscreen mode.
 
 The only tiling window in a workspace already takes up the whole workspace, so entering fullscreen without `--width` or `--no-outer-gaps` does nothing for it.
+Such fullscreen also ends once the window becomes the only tiling window in its workspace, e.g. when the other windows close.
 
 // =========================================================== Options
 include::./util/conditional-options-header.adoc[]

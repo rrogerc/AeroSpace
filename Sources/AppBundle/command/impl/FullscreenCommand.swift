@@ -25,10 +25,7 @@ struct FullscreenCommand: Command {
                     return .succ(io.err(msg))
             }
         }
-        // The only tiling window already takes up the whole workspace. Plain fullscreen wouldn't change how it looks,
-        // it would only leave the window in a fullscreen mode that the next fullscreen toggle (e.g. --width) turns off
-        let isOnlyTilingWindow = target.workspace.rootTilingContainer.allLeafWindowsRecursive == [window]
-        if newState && args.width == nil && !args.noOuterGaps && isOnlyTilingWindow {
+        if newState && window.isPointlessFullscreen(width: args.width.map { CGFloat($0) }, noOuterGaps: args.noOuterGaps) {
             return switch args.failIfNoop {
                 case true: .fail
                 case false:
@@ -46,3 +43,26 @@ struct FullscreenCommand: Command {
 }
 
 let noWindowIsFocused = "No window is focused"
+
+extension Window {
+    /// The only tiling window already takes up the whole workspace. Plain fullscreen (without --width and
+    /// --no-outer-gaps) wouldn't change how it looks, it would only leave the window in a fullscreen mode that the
+    /// next fullscreen toggle (e.g. --width) turns off
+    @MainActor
+    func isPointlessFullscreen(width: CGFloat?, noOuterGaps: Bool) -> Bool {
+        width == nil && !noOuterGaps && nodeWorkspace?.rootTilingContainer.allLeafWindowsRecursive == [self]
+    }
+}
+
+/// The fullscreen command doesn't enter pointless fullscreen, but fullscreen can become pointless later, e.g. when
+/// the other windows of the workspace close, or when the fullscreen window moves to an empty workspace
+@MainActor
+func exitPointlessFullscreen() {
+    for workspace in Workspace.all {
+        for window in workspace.rootTilingContainer.allLeafWindowsRecursive where window.isFullscreen {
+            if window.isPointlessFullscreen(width: window.fullscreenWidth, noOuterGaps: window.noOuterGapsInFullscreen) {
+                window.isFullscreen = false
+            }
+        }
+    }
+}
