@@ -98,3 +98,42 @@ func mostRecentTilingWindow(_ node: TreeNode) -> Window? {
     }
     return nil
 }
+
+private let dwindlePreselectKey = TreeNodeUserDataKey<CardinalDirection>(key: "dwindlePreselect")
+
+extension Workspace {
+    /// Set by `dwindle preselect`: the direction of the next split in the workspace, and the side of the new window
+    @MainActor var dwindlePreselect: CardinalDirection? {
+        get { getUserData(key: dwindlePreselectKey) }
+        set {
+            if let newValue {
+                putUserData(key: dwindlePreselectKey, data: newValue)
+            } else {
+                cleanUserData(key: dwindlePreselectKey)
+            }
+        }
+    }
+}
+
+extension TilingContainer {
+    /// Like in Hyprland, the sizes stay where they are: the ratio belongs to the split, not to its halves
+    @MainActor
+    func swapDwindleHalves() {
+        let weights = children.map { $0.getWeight(orientation) }
+        swapChildren(0, 1)
+        for (child, weight) in zip(children, weights) {
+            child.setWeight(orientation, weight)
+        }
+    }
+
+    /// Weights are pixel sizes along the orientation, so they are rescaled to the new axis, keeping their proportions
+    @MainActor
+    func setDwindleOrientation(_ newOrientation: Orientation, _ rect: Rect) {
+        if newOrientation == orientation { return }
+        let sizes = dwindleSizes(children.map { $0.getWeight(orientation) }, rect.getDimension(newOrientation))
+        setOrientationForDwindle(newOrientation)
+        for (child, size) in zip(children, sizes) {
+            child.setWeight(newOrientation, size)
+        }
+    }
+}

@@ -19,6 +19,13 @@ let config_help_generated = """
 let debug_windows_help_generated = """
     USAGE: debug-windows [-h|--help] [--window-id <window-id>]
     """
+let dwindle_help_generated = """
+    USAGE: dwindle [-h|--help] [--window-id <window-id>] (togglesplit|swapsplit)
+       OR: dwindle [-h|--help] [--window-id <window-id>] rotatesplit [<angle>]
+       OR: dwindle [-h|--help] [--window-id <window-id>] splitratio [+|-]<ratio>
+       OR: dwindle [-h|--help] [--window-id <window-id>] preselect (left|down|up|right|none)
+       OR: dwindle [-h|--help] [--window-id <window-id>] [--unstable] movetoroot
+    """
 let echo_help_generated = """
     USAGE: echo [-h|--help] [--stderr] [--window-id <window-id>] -- <string>...
     """

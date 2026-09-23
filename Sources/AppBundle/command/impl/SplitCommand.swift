@@ -6,10 +6,13 @@ struct SplitCommand: Command {
     /*conforms*/ let shouldResetClosedWindowsCache = true
 
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
+        guard let target = args.resolveTargetOrReportError(env, io) else { return .fail }
+        if target.workspace.isDwindle {
+            return .fail(io.err("'split' isn't available in the dwindle layout. Use 'dwindle preselect' to choose where the next window goes, or 'dwindle togglesplit'"))
+        }
         if config.enableNormalizationFlattenContainers {
             return .fail(io.err("'split' has no effect when 'enable-normalization-flatten-containers' normalization enabled. My recommendation: keep the normalizations enabled, and prefer 'join-with' over 'split'."))
         }
-        guard let target = args.resolveTargetOrReportError(env, io) else { return .fail }
         guard let window = target.windowOrNil else {
             return .fail(io.err(noWindowIsFocused))
         }

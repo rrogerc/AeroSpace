@@ -21,6 +21,12 @@ aerospace -h;
 
     | debug-windows [--window-id <window_id>]
 
+    | dwindle [--window-id <window_id>] (togglesplit|swapsplit) [--window-id <window_id>]
+    | dwindle [--window-id <window_id>] rotatesplit [<number>] [--window-id <window_id>]
+    | dwindle [--window-id <window_id>] splitratio <number> [--window-id <window_id>]
+    | dwindle [--window-id <window_id>] preselect (left|down|up|right|none) [--window-id <window_id>]
+    | dwindle [--window-id <window_id>|--unstable]... movetoroot [--window-id <window_id>|--unstable]...
+
     | echo [--stderr|--window <window_id>]... --
 
     | enable toggle

@@ -21,8 +21,12 @@ func dwindleBindingDataForNewTilingWindow(_ workspace: Workspace) -> BindingData
     }
 
     let targetRect = dwindleRects(workspace)[ObjectIdentifier(target)] ?? workspace.dwindleRootRect
-    let orientation = dwindleSplitOrientation(targetRect)
-    let newWindowFirst = config.dwindle.forceSplit == .left
+    let preselect = workspace.dwindlePreselect
+    if !config.dwindle.permanentDirectionOverride {
+        workspace.dwindlePreselect = nil
+    }
+    let orientation = preselect?.orientation ?? dwindleSplitOrientation(targetRect)
+    let newWindowFirst = preselect.map { !$0.isPositive } ?? (config.dwindle.forceSplit == .left)
 
     // Hyprland's split ratio is the share of the first child: 1 is 50/50, 1.2 is 60/40. Weights are pixel sizes
     let size = targetRect.getDimension(orientation)

@@ -1,0 +1,80 @@
+= aerospace-dwindle(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-dwindle
+// tag::purpose[]
+:manpurpose: Change the split of the focused window in the dwindle layout
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace dwindle [-h|--help] [--window-id <window-id>] (togglesplit|swapsplit)
+aerospace dwindle [-h|--help] [--window-id <window-id>] rotatesplit [<angle>]
+aerospace dwindle [-h|--help] [--window-id <window-id>] splitratio [+|-]<ratio>
+aerospace dwindle [-h|--help] [--window-id <window-id>] preselect (left|down|up|right|none)
+aerospace dwindle [-h|--help] [--window-id <window-id>] [--unstable] movetoroot
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+The command only works when the xref:guide.adoc#dwindle-layout[dwindle layout] is enabled.
+The dwindle layout and this command are features of this fork.
+
+The messages are the ones of Hyprland's dwindle layout, and they act on the split that the focused window is one half of.
+If the focused window is in an accordion, the whole accordion is one half of the split.
+
+// =========================================================== Options
+include::util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+--unstable::
+Only for `movetoroot`.
+Swap the two halves of the root split instead of keeping the window on the side of the screen where it was.
+
+// =========================================================== Arguments
+include::./util/conditional-arguments-header.adoc[]
+
+togglesplit::
+Toggle the split between side by side and one above the other.
+Requires `dwindle.preserve-split = true`, because otherwise the direction of a split follows its shape.
+
+swapsplit::
+Swap the two halves of the split.
+The sizes stay where they are.
+
+rotatesplit [<angle>]::
+Rotate the split clockwise by `<angle>` degrees, which must be a multiple of 90.
+Negative angles rotate counterclockwise.
+The default is 90.
+
+splitratio [+|-]<ratio>::
+Change the share of the first (left or top) half of the split.
+`1` is 50/50, `1.2` is 60/40.
+With `+` or `-`, the value is added to the current ratio.
+Without a sign, the value becomes the ratio.
+The ratio is clamped to the range from 0.1 to 1.9.
+
+preselect (left|down|up|right|none)::
+Choose where the next window of the workspace goes:
+the most recent window will be split in the given direction, and the new window will take the given side.
+Applies once, unless `dwindle.permanent-direction-override = true`.
+`none` cancels it.
+
+movetoroot::
+Make the window one of the two halves of the whole workspace.
+The window swaps places with the half of the workspace that doesn't contain it.
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

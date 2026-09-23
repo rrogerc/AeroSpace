@@ -40,6 +40,13 @@ include::aerospace-debug-windows.adoc[tags=synopsis]
 include::aerospace-debug-windows.adoc[tags=purpose]
 include::aerospace-debug-windows.adoc[tags=body]
 
+== dwindle
+----
+include::aerospace-dwindle.adoc[tags=synopsis]
+----
+include::aerospace-dwindle.adoc[tags=purpose]
+include::aerospace-dwindle.adoc[tags=body]
+
 == echo
 ----
 include::aerospace-echo.adoc[tags=synopsis]

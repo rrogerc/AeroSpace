@@ -62,14 +62,7 @@ extension TilingContainer {
     @MainActor
     fileprivate func applyDwindleOrientations(_ rect: Rect) {
         guard layout == .tiles else { return }
-        let newOrientation = dwindleSplitOrientation(rect)
-        if newOrientation != orientation {
-            let sizes = dwindleSizes(children.map { $0.getWeight(orientation) }, rect.getDimension(newOrientation))
-            setOrientationForDwindle(newOrientation)
-            for (child, size) in zip(children, sizes) { // Weights are pixel sizes along the orientation
-                child.setWeight(newOrientation, size)
-            }
-        }
+        setDwindleOrientation(dwindleSplitOrientation(rect), rect)
         for (child, childRect) in zip(children, dwindleChildRects(rect, orientation)) {
             (child as? TilingContainer)?.applyDwindleOrientations(childRect)
         }

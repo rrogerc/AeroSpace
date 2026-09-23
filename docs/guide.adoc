@@ -439,6 +439,8 @@ split-width-multiplier = 1.0
 default-split-ratio = 1.0
 # Where the new window goes. 'right' means right or below, 'left' means left or above
 force-split = 'right'
+# true: 'dwindle preselect' applies to every next window until 'dwindle preselect none', not only to the next one
+permanent-direction-override = false
 ----
 
 In a dwindle workspace:
@@ -454,6 +456,9 @@ windows is focused joins them. `layout accordion` on a split turns it into one.
 * A container that ends up with more than two children, for example after dwindle is turned on or after
 `flatten-workspace-tree`, is folded into a spiral: the first child keeps half of it, and the rest are split the same way.
 * The root container is always `tiles`. `default-root-container-layout` doesn't apply.
+* The xref:commands.adoc#dwindle[dwindle] command takes the layout messages of Hyprland's dwindle layout:
+`togglesplit`, `swapsplit`, `rotatesplit`, `splitratio`, `preselect` and `movetoroot`.
+* `split` isn't available. `dwindle preselect` chooses where the next window goes instead.
 
 [#floating-windows]
 === Floating windows

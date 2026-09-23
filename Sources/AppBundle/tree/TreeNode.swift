@@ -115,6 +115,11 @@ open class TreeNode: Equatable, AeroAny {
 
     var mostRecentChild: TreeNode? { _mruChildren.mostRecent ?? children.last }
 
+    /// Unlike unbinding and binding the children again, keeps the MRU order and the weights of the children
+    func swapChildren(_ i: Int, _ j: Int) {
+        _children.swapAt(i, j)
+    }
+
     var mruChildren: MruStack<TreeNode> { _mruChildren }
 
     @discardableResult
