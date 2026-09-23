@@ -33,6 +33,14 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   kept their space, and a fullscreen window left alone stayed fullscreen. Such apps still leave
   `NSWorkspace.runningApplications`, so AeroSpace observes it (KVO) and refreshes the apps that left it
   (`Sources/AppBundle/GlobalObserver.swift`). No unit test, it's macOS behavior: checked live by quitting Clock.
+- **Closing a window doesn't change the most recent window** — when a closed window leaves a container with one child,
+  upstream's flatten binds that child in the container's place, and binding makes a node the most recent all the way
+  up to the workspace. So closing a window could take "most recent" from the focused window in another branch, and a
+  fullscreen window there left fullscreen. Dwindle workspaces flatten on nearly every close. The flatten now uses
+  `TreeNode.replace(with:)`, which puts the child at the container's index, weight, and place in the MRU order
+  (`Sources/AppBundle/tree/normalizeContainers.swift`, `Sources/AppBundle/tree/TreeNode.swift`,
+  `Sources/AppBundle/util/MruStack.swift`). Tests: `TreeNodeTest.testNormalizeContainers_flattenKeepsTheMostRecentWindows`,
+  `DwindleTest.testClosingAWindowDoesntEndFullscreenOfAnotherOne`.
 - **Workspace switches don't flash the wallpaper** — apps move their windows at their own pace (Zen lands a frame
   after it accepts a move, games much later), so hiding the previous workspace waits until WindowServer shows the
   windows being revealed, for at most 250 ms (`PendingReveals` in `Sources/AppBundle/layout/PendingReveals.swift`).
