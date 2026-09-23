@@ -8,6 +8,13 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
 - **`fullscreen --width <0..1>`** — centered partial-width fullscreen (e.g. `aerospace fullscreen --width 0.66`).
   Touches `Sources/Common/cmdArgs/impl/FullscreenCmdArgs.swift`, `Sources/AppBundle/command/impl/FullscreenCommand.swift`,
   `Sources/AppBundle/tree/Window.swift` (`fullscreenWidth`), `Sources/AppBundle/layout/layoutRecursive.swift` (`layoutFullscreen`).
+- **Cmd+Q never switches workspaces** — when the focused window or its app goes away, macOS activates the previous app
+  on its own; AeroSpace now stays on the workspace instead of following it (`isMacosFallback` in
+  `Sources/AppBundle/focusCache.swift`). Relies on window discovery: after each refresh, apps that show windows
+  AeroSpace doesn't manage yet (e.g. a game that was still loading) are rescanned (`Sources/AppBundle/unmanagedWindows.swift`).
+  Also touches `Sources/AppBundle/tree/Window.swift`, `Sources/AppBundle/tree/MacWindow.swift`,
+  `Sources/AppBundle/windowServer.swift`, `Sources/AppBundle/layout/refresh.swift`.
+  Tests: `MacosFallbackFocusTest`, `UnmanagedWindowRescansTest`.
 - **`rebuild-and-install.sh`** — the build/install helper described below.
 
 ## Rebuild, install, and restart — one command
