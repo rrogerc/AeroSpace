@@ -13,11 +13,14 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   the same gap on all four edges instead of 1px more at the bottom, and fullscreen uses the same height as tiling, so
   it no longer moves the bottom edge by 1px (`layoutHeight` in `Sources/AppBundle/layout/layoutRecursive.swift`).
   Plain `fullscreen` (no `--width`/`--no-outer-gaps`) does nothing for the only tiling window of a workspace, which
-  already takes up the whole workspace, and such fullscreen ends on the next refresh once the window is left alone
-  (other windows closed, or it moved to an empty workspace), so the next `fullscreen --width` doesn't just turn it off
+  already takes up the whole workspace, and such fullscreen ends as soon as the window is left alone (other windows
+  closed, minimized or hidden, or it moved to an empty workspace), so the next `fullscreen --width` doesn't just turn
+  it off and the tray doesn't mark the workspace as fullscreen
   (`isPointlessFullscreen`/`exitPointlessFullscreen` in `Sources/AppBundle/command/impl/FullscreenCommand.swift`,
-  called from `refreshModel_nonCancellable` in `Sources/AppBundle/layout/refresh.swift`;
-  `docs/aerospace-fullscreen.adoc`). Tests: `FullscreenCommandTest`.
+  called from `refreshModel_nonCancellable` in `Sources/AppBundle/layout/refresh.swift`, and again in
+  `runHeavyCompleteRefreshSession` after `normalizeLayoutReason`: a refresh collects closed windows and moves minimized
+  and hidden ones out of the tiling tree only after its model refresh, so `normalizeLayoutReason` now runs before the
+  tray update; `docs/aerospace-fullscreen.adoc`). Tests: `FullscreenCommandTest`.
 - **Cmd+Q never switches workspaces** — when the focused window or its app goes away, macOS activates the previous app
   on its own; AeroSpace now stays on the workspace instead of following it (`isMacosFallback` in
   `Sources/AppBundle/focusCache.swift`). Relies on window discovery: after each refresh, apps that show windows
