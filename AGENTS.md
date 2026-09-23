@@ -13,7 +13,10 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   the same gap on all four edges instead of 1px more at the bottom, and fullscreen uses the same height as tiling, so
   it no longer moves the bottom edge by 1px (`layoutHeight` in `Sources/AppBundle/layout/layoutRecursive.swift`).
   Plain `fullscreen` (no `--width`/`--no-outer-gaps`) does nothing for the only tiling window of a workspace, which
-  already takes up the whole workspace (`Sources/AppBundle/command/impl/FullscreenCommand.swift`,
+  already takes up the whole workspace, and such fullscreen ends on the next refresh once the window is left alone
+  (other windows closed, or it moved to an empty workspace), so the next `fullscreen --width` doesn't just turn it off
+  (`isPointlessFullscreen`/`exitPointlessFullscreen` in `Sources/AppBundle/command/impl/FullscreenCommand.swift`,
+  called from `refreshModel_nonCancellable` in `Sources/AppBundle/layout/refresh.swift`;
   `docs/aerospace-fullscreen.adoc`). Tests: `FullscreenCommandTest`.
 - **Cmd+Q never switches workspaces** — when the focused window or its app goes away, macOS activates the previous app
   on its own; AeroSpace now stays on the workspace instead of following it (`isMacosFallback` in
