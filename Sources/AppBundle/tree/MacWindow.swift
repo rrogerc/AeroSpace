@@ -180,7 +180,8 @@ final class MacWindow: Window {
             hiddenPlacement = placement
             return
         }
-        setAxFrame(p, nil)
+        PendingReveals.shared.remove(windowId)
+        macApp.setAxFrame(windowId, p, nil, afterReveals: true)
         hiddenPlacement = macApp.lastFrameJob(windowId).map { HiddenWindowPlacement(target: p, frame: $0) }
     }
 
@@ -206,8 +207,11 @@ final class MacWindow: Window {
                 newY = newY.coerce(in: workspaceRect.minY ... max(workspaceRect.minY, workspaceRect.maxY - windowHeight))
 
                 setAxFrame(CGPoint(x: newX, y: newY), nil)
+                PendingReveals.shared.add(windowId, pid: macApp.pid, screen: workspaceRect)
+            case .tiling:
+                PendingReveals.shared.add(windowId, pid: macApp.pid, screen: nodeWorkspace.workspaceMonitor.rect)
             case .macosNativeFullscreenWindow, .macosNativeHiddenAppWindow, .macosNativeMinimizedWindow,
-                 .macosPopupWindow, .tiling, .rootTilingContainer, .shimContainerRelation: break
+                 .macosPopupWindow, .rootTilingContainer, .shimContainerRelation: break
         }
 
         self.prevUnhiddenProportionalPositionInsideWorkspaceRect = nil

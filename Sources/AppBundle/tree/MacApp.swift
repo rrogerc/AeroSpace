@@ -198,11 +198,15 @@ final class MacApp: AbstractApp {
         }
     }
 
-    func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?) {
+    func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?, afterReveals: Bool = false) {
         setFrameJobs.removeValue(forKey: windowId)?.cancel()
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
         setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }
+            if afterReveals {
+                PendingReveals.shared.wait(for: job, pid: pid)
+                try job.checkCancellation()
+            }
             // Read after preceding writes on this app's worker. Requested frames are not proof
             // that an app accepted them, and a mouse drag may have changed the actual frame.
             // Keep position-only moves on the existing AX path: an extra WindowServer read
