@@ -30,6 +30,22 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   windows being revealed, for at most 250 ms (`PendingReveals` in `Sources/AppBundle/layout/PendingReveals.swift`).
   Also touches `Sources/AppBundle/tree/MacWindow.swift` (`hideInCorner`, `unhideFromCorner`) and
   `Sources/AppBundle/tree/MacApp.swift` (`setAxFrame(afterReveals:)`). Tests: `PendingRevealsTest`.
+- **Hyprland-style dwindle layout** — with `[dwindle] enabled = true`, every new tiling window splits the most recent
+  one in two, like Hyprland's dwindle layout (reference: Hyprland's `DwindleAlgorithm.cpp`). It's built on the regular
+  tree: in a dwindle workspace every `tiles` container is a binary split, containers with one child are always
+  flattened, weights keep their proportions, and anything with more than two children is folded into a spiral. The
+  tree is normalized right before every layout, and placement normalizes first too, because a refresh changes the tree
+  after its own normalization. `move`, `focus` and `swap` with a direction use geometry like Hyprland; the
+  `aerospace dwindle` command takes Hyprland's layout messages; `split` refuses to run. Code:
+  `Sources/AppBundle/tree/dwindle/` (placement, normalization, move, focus), `Sources/AppBundle/config/parseDwindle.swift`,
+  `Sources/AppBundle/command/impl/DwindleCommand.swift`, `Sources/Common/cmdArgs/impl/DwindleCmdArgs.swift`.
+  Hooks: `MacWindow.swift` (placement; `getOrRegister` checks for a duplicate registration before placing),
+  `normalizeContainers.swift`, `layoutRecursive.swift` (`layoutWorkspace`, `layoutTiles`; `layoutHeight` is no longer
+  fileprivate), `TilingContainer.swift`, `TreeNode.swift` (`swapChildren`), `WorkspaceEx.swift`, `focus.swift`
+  (`stampFocusOrder`), `MoveCommand.swift`, `FocusCommand.swift`, `SwapCommand.swift`, `SplitCommand.swift`,
+  `MoveNodeToWorkspaceCommand.swift`, and `OrderedJson.swift` + `parseConfig.swift` (decimal numbers in the config).
+  Docs: the "Dwindle layout" section of `docs/guide.adoc`, `docs/aerospace-dwindle.adoc`.
+  Tests: `DwindleTest`, `DwindleCommandTest`, `DwindleMoveFocusTest`, `ConfigTest.testParseDwindle`.
 - **`rebuild-and-install.sh`** — the build/install helper described below.
 
 ## Rebuild, install, and restart — one command
