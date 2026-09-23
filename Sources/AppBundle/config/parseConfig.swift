@@ -155,6 +155,7 @@ private let configParser: [String: any ParserProtocol<Config>] = [
 
     "gaps": Parser(\.gaps, parseGaps),
     "focus-follows-mouse": Parser(\.focusFollowsMouse, parseFocusFollowsMouse),
+    "dwindle": Parser(\.dwindle, parseDwindle),
     "workspace-to-monitor-force-assignment": Parser(\.workspaceToMonitorForceAssignment, parseWorkspaceToMonitorAssignment),
     "on-window-detected": Parser(\.onWindowDetected, parseOnWindowDetectedArray),
 
@@ -327,6 +328,13 @@ func parseConfigVersion(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> Res
 
 func parseInt(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<Int> {
     raw.asIntOrNil.toResult(expectedActualTypeDiagnostic(expected: .int, actual: raw.tomlType, backtrace))
+}
+
+/// Accepts TOML integers too, because `1` and `1.0` are different types in TOML
+func parseDouble(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<Double> {
+    (raw.asDoubleOrNil ?? raw.asIntOrNil.map(Double.init))
+        .toResult(expectedActualTypeDiagnostic(expected: .float, actual: raw.tomlType, backtrace))
+        .filter(.init(backtrace, "Must be a finite number")) { $0.isFinite }
 }
 
 func parseString(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<String> {

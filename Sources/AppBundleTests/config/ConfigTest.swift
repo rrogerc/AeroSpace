@@ -239,7 +239,7 @@ final class ConfigTest: XCTestCase {
 
         assertEquals(
             parseConfig("foo = 1.0").strErrors,
-            ["[ERROR] foo: Unsupported TOML type: Double"],
+            ["[ERROR] foo: Unknown top-level key"],
         )
 
         assertEquals(
@@ -528,6 +528,50 @@ final class ConfigTest: XCTestCase {
             "[ERROR] gaps.inner.vertical[0]: The table is expected to have a single key \'monitor\'",
             "[ERROR] gaps.inner.vertical[1].monitor: The table is expected to have a single key",
         ])
+    }
+
+    func testParseDwindle() {
+        let result1 = parseConfig(
+            """
+            [dwindle]
+                enabled = true
+                preserve-split = false
+                split-width-multiplier = 1.5
+                default-split-ratio = 1
+                force-split = 'left'
+                permanent-direction-override = true
+            """,
+        )
+        assertEquals(result1.errors, [])
+        let dwindle = result1.config.dwindle
+        assertEquals(dwindle.enabled, true)
+        assertEquals(dwindle.preserveSplit, false)
+        assertEquals(dwindle.splitWidthMultiplier, 1.5)
+        assertEquals(dwindle.defaultSplitRatio, 1.0) // TOML integers are accepted where decimals are expected
+        assertEquals(dwindle.forceSplit, .left)
+        assertEquals(dwindle.permanentDirectionOverride, true)
+
+        let result2 = parseConfig(
+            """
+            [dwindle]
+                split-width-multiplier = 3.5
+                default-split-ratio = nan
+                force-split = 'up'
+                foo = 1
+            """,
+        )
+        assertEquals(result2.strErrors.sorted(), [
+            "[ERROR] dwindle.default-split-ratio: Must be a finite number",
+            "[ERROR] dwindle.foo: Unknown key",
+            "[ERROR] dwindle.force-split: Can't parse force-split 'up'. Possible values: left|right",
+            "[ERROR] dwindle.split-width-multiplier: Must be in [0.1, 3.0] range",
+        ])
+        assertEquals(result2.config.dwindle.splitWidthMultiplier, 1.0)
+
+        assertEquals(
+            parseConfig("dwindle.default-split-ratio = 'big'").strErrors,
+            ["[ERROR] dwindle.default-split-ratio: Expected type is 'Float'. But actual type is 'String'"],
+        )
     }
 
     func testAfterLoginCommandDeprecation() {

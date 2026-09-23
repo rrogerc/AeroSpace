@@ -61,6 +61,10 @@ on-mode-changed = []
 
 focus-follows-mouse.enabled = false
 
+# Hyprland-style dwindle layout: each new window splits the focused window in two.
+# This is a feature of this fork. See the 'Dwindle layout' section in docs/guide.adoc
+dwindle.enabled = false
+
 # Possible values: (qwerty|dvorak|colemak)
 # See https://nikitabobko.github.io/AeroSpace/guide#key-mapping
 key-mapping.preset = 'qwerty'
