@@ -5,10 +5,19 @@ extension Workspace {
     func layoutWorkspace() async throws {
         if isEffectivelyEmpty { return }
         let rect = workspaceMonitor.visibleRectPaddedByOuterGaps
-        // If monitors are aligned vertically and the monitor below has smaller width, then macOS may not allow the
-        // window on the upper monitor to take full width. rect.height - 1 resolves this problem
-        // But I also faced this problem in monitors horizontal configuration. ¯\_(ツ)_/¯
-        try await layoutRecursive(rect.topLeftCorner, width: rect.width, height: rect.height - 1, virtual: rect, LayoutContext(self))
+        let height = workspaceMonitor.layoutHeight(of: rect)
+        try await layoutRecursive(rect.topLeftCorner, width: rect.width, height: height, virtual: rect, LayoutContext(self))
+    }
+}
+
+extension MonitorInfo {
+    // If monitors are aligned vertically and the monitor below has smaller width, then macOS may not allow the
+    // window on the upper monitor to take full width. rect.height - 1 resolves this problem
+    // But I also faced this problem in monitors horizontal configuration. ¯\_(ツ)_/¯
+    // Only windows that reach the bottom of the visible rect need it. With a bottom outer gap, the windows are already
+    // away from it, and "- 1" would only make the bottom gap 1px bigger than the other gaps
+    fileprivate func layoutHeight(of rect: Rect) -> CGFloat {
+        rect.maxY < visibleRect.maxY ? rect.height : rect.height - 1
     }
 }
 
@@ -100,12 +109,13 @@ extension Window {
         let monitorRect = noOuterGapsInFullscreen
             ? context.workspace.workspaceMonitor.visibleRect
             : context.workspace.workspaceMonitor.visibleRectPaddedByOuterGaps
+        let height = context.workspace.workspaceMonitor.layoutHeight(of: monitorRect)
         if let fullscreenWidth {
             let newWidth = monitorRect.width * fullscreenWidth
             let newX = monitorRect.topLeftX + (monitorRect.width - newWidth) / 2
-            setAxFrame(CGPoint(x: newX, y: monitorRect.topLeftY), CGSize(width: newWidth, height: monitorRect.height))
+            setAxFrame(CGPoint(x: newX, y: monitorRect.topLeftY), CGSize(width: newWidth, height: height))
         } else {
-            setAxFrame(monitorRect.topLeftCorner, CGSize(width: monitorRect.width, height: monitorRect.height))
+            setAxFrame(monitorRect.topLeftCorner, CGSize(width: monitorRect.width, height: height))
         }
     }
 }
