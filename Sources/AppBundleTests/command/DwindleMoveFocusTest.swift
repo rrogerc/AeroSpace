@@ -107,6 +107,85 @@ final class DwindleMoveFocusTest: XCTestCase {
             .window(2),
         ]))
     }
+
+    func testFocusDoesntGoDiagonally() async throws {
+        let workspace = try await openGrid()
+        assertEquals(Window.get(byId: 1)?.focusWindow(), true)
+        assertEquals(Window.get(byId: 3)?.focusWindow(), true)
+
+        // Window 1 is more recent than window 4, but it's diagonally across. The tree would pick it
+        await runCommand("focus left")
+        assertEquals(focus.windowOrNil?.windowId, 4)
+        assertEquals(workspace.rootTilingContainer.layoutDescription, gridLayout)
+    }
+
+    func testFocusPicksTheMostRecentOfTheNeighbors() async throws {
+        let workspace = Workspace.get(byName: name)
+        for id: UInt32 in 1 ... 3 {
+            try await openWindow(id, in: workspace)
+        }
+        for (recentNeighbor, other) in [(2, 3), (3, 2)] as [(UInt32, UInt32)] {
+            assertEquals(Window.get(byId: other)?.focusWindow(), true)
+            assertEquals(Window.get(byId: recentNeighbor)?.focusWindow(), true)
+            assertEquals(Window.get(byId: 1)?.focusWindow(), true)
+            await runCommand("focus right")
+            assertEquals(focus.windowOrNil?.windowId, recentNeighbor)
+        }
+    }
+
+    func testFocusAtTheEdgeFollowsTheBoundaries() async throws {
+        let workspace = Workspace.get(byName: name)
+        try await openWindow(1, in: workspace)
+        try await openWindow(2, in: workspace)
+
+        await runCommand("focus right")
+        assertEquals(focus.windowOrNil?.windowId, 2)
+        await runCommand("focus right --boundaries-action wrap-around-the-workspace")
+        assertEquals(focus.windowOrNil?.windowId, 1)
+    }
+
+    func testSwapDoesntGoDiagonally() async throws {
+        let workspace = try await openGrid()
+        assertEquals(Window.get(byId: 1)?.focusWindow(), true)
+        assertEquals(Window.get(byId: 3)?.focusWindow(), true)
+
+        await runCommand("swap left")
+        assertEquals(workspace.rootTilingContainer.layoutDescription, .h_tiles([
+            .v_tiles([.window(1), .window(3)]),
+            .v_tiles([.window(2), .window(4)]),
+        ]))
+    }
+
+    func testSwapAtTheEdge() async throws {
+        let workspace = Workspace.get(byName: name)
+        let window1 = try await openWindow(1, in: workspace)
+        try await openWindow(2, in: workspace)
+        assertEquals(window1.focusWindow(), true)
+
+        let result = await parseCommand("swap left").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 2)
+        await runCommand("swap left --wrap-around")
+        assertEquals(workspace.rootTilingContainer.layoutDescription, .h_tiles([.window(2), .window(1)]))
+    }
+
+    /// 1 | 2
+    /// --+--
+    /// 4 | 3
+    private func openGrid() async throws -> Workspace {
+        let workspace = Workspace.get(byName: name)
+        let window1 = try await openWindow(1, in: workspace)
+        try await openWindow(2, in: workspace)
+        try await openWindow(3, in: workspace)
+        assertEquals(window1.focusWindow(), true)
+        try await openWindow(4, in: workspace)
+        assertEquals(workspace.rootTilingContainer.layoutDescription, gridLayout)
+        return workspace
+    }
+
+    private let gridLayout: LayoutDescription = .h_tiles([
+        .v_tiles([.window(1), .window(4)]),
+        .v_tiles([.window(2), .window(3)]),
+    ])
 }
 
 @MainActor

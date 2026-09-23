@@ -36,6 +36,11 @@ This behavior can be disabled with `--ignore-floating` flag.
 `focus child|parent` isn't supported because the necessity of this operation is under the question.
 https://github.com/nikitabobko/AeroSpace/issues/5
 
+In the xref:guide.adoc#dwindle-layout[dwindle layout], `focus (left|down|up|right)` from a tiling window works like Hyprland's:
+it goes to a window that touches the focused one on that side, never diagonally across a split.
+If several windows do, the most recently focused one wins.
+If no tiling window is that way, the command works as described above.
+
 // =========================================================== Options
 include::util/conditional-options-header.adoc[]
 

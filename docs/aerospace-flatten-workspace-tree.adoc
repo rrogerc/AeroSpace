@@ -21,6 +21,8 @@ aerospace flatten-workspace-tree [-h|--help] [--workspace <workspace>]
 
 The command is useful when you messed up with your layout, and it's easier to "reset" it and start again.
 
+In the xref:guide.adoc#dwindle-layout[dwindle layout], the flat tree is then folded into a spiral of the windows in the same order.
+
 // =========================================================== Options
 include::./util/conditional-options-header.adoc[]
 

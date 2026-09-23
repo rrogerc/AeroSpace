@@ -6,9 +6,7 @@ import Common
 @MainActor
 func dwindleMove(_ window: Window, _ workspace: Workspace, _ direction: CardinalDirection, _ args: MoveCmdArgs, _ io: CmdIo) -> BinaryExitCode {
     // Inside an accordion, moving along it reorders the windows, like outside of dwindle
-    if let accordion = window.parent as? TilingContainer, accordion.layout == .accordion, accordion.orientation == direction.orientation,
-       let index = window.ownIndex, accordion.children.indices.contains(index + direction.focusOffset)
-    {
+    if isDwindleStepWithinAccordion(window, direction), let accordion = window.parent, let index = window.ownIndex {
         accordion.swapChildren(index, index + direction.focusOffset)
         return .succ
     }

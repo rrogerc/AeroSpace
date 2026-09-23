@@ -64,13 +64,3 @@ func dwindleBindingDataForNewTilingWindow(_ workspace: Workspace, focalPoint: CG
     target.bind(to: split, adaptiveWeight: targetWeight, index: 0)
     return BindingData(parent: split, adaptiveWeight: newWindowWeight, index: newWindowIndex)
 }
-
-/// The tiles that dwindle splits: windows, and accordions as a whole
-@MainActor
-private func dwindleLeaves(_ node: TreeNode) -> [TreeNode] {
-    switch node.nodeCases {
-        case .window: [node]
-        case .tilingContainer(let container) where container.layout == .accordion: container.isEffectivelyEmpty ? [] : [container]
-        default: node.children.flatMap(dwindleLeaves)
-    }
-}

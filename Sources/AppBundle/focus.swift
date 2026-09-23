@@ -83,6 +83,7 @@ struct NativeFocusRefreshToken {
     let status = newFocus.workspace.workspaceMonitor.setActiveWorkspace(newFocus.workspace)
 
     newFocus.windowOrNil?.markAsMostRecentChild()
+    newFocus.windowOrNil?.stampFocusOrder()
     return status
 }
 extension Window {

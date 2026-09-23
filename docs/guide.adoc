@@ -459,6 +459,23 @@ windows is focused joins them. `layout accordion` on a split turns it into one.
 * The xref:commands.adoc#dwindle[dwindle] command takes the layout messages of Hyprland's dwindle layout:
 `togglesplit`, `swapsplit`, `rotatesplit`, `splitratio`, `preselect` and `movetoroot`.
 * `split` isn't available. `dwindle preselect` chooses where the next window goes instead.
+* `move`, `focus` and `swap` with a direction work like Hyprland's: they go to the window that touches the focused one
+on that side, never diagonally across a split.
+
+The commands that correspond to Hyprland's dispatchers:
+
+[cols="1,1"]
+|===
+|Hyprland |AeroSpace
+
+|`movefocus` |xref:commands.adoc#focus[focus]
+|`movewindow` |xref:commands.adoc#move[move]
+|`swapwindow` |xref:commands.adoc#swap[swap]
+|`togglefloating` |xref:commands.adoc#layout[layout floating tiling]
+|`fullscreen` |xref:commands.adoc#fullscreen[fullscreen]
+|`layoutmsg togglesplit` and the other dwindle messages |xref:commands.adoc#dwindle[dwindle togglesplit], ...
+|`splitratio` |xref:commands.adoc#dwindle[dwindle splitratio] or xref:commands.adoc#resize[resize]
+|===
 
 [#floating-windows]
 === Floating windows

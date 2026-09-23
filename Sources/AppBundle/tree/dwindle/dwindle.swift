@@ -88,6 +88,25 @@ func dwindleLeaf(_ window: Window) -> TreeNode {
     window.parentsWithSelf.last(where: { ($0 as? TilingContainer)?.layout == .accordion }) ?? window
 }
 
+/// The tiles that dwindle splits: windows, and accordions as a whole
+@MainActor
+func dwindleLeaves(_ node: TreeNode) -> [TreeNode] {
+    switch node.nodeCases {
+        case .window: [node]
+        case .tilingContainer(let container) where container.layout == .accordion: container.isEffectivelyEmpty ? [] : [container]
+        default: node.children.flatMap(dwindleLeaves)
+    }
+}
+
+/// Whether the window has a neighbor that way in its accordion. Moving and focusing between the windows of an
+/// accordion work like outside of dwindle
+@MainActor
+func isDwindleStepWithinAccordion(_ window: Window, _ direction: CardinalDirection) -> Bool {
+    guard let accordion = window.parent as? TilingContainer, accordion.layout == .accordion,
+          accordion.orientation == direction.orientation, let index = window.ownIndex else { return false }
+    return accordion.children.indices.contains(index + direction.focusOffset)
+}
+
 /// The most recently used tiling window. Unlike `mostRecentWindowRecursive`, doesn't give up at an empty container,
 /// which can be the most recent child for a moment (e.g. after the closed windows cache is partially restored)
 @MainActor

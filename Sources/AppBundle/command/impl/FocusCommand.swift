@@ -14,6 +14,13 @@ struct FocusCommand: Command {
         ) {
             return .fail
         }
+        // Before floating windows are put into the tree, so they don't get in the way. If no tiling window is that way,
+        // the usual lookup below can still reach floating windows, like Hyprland's fallback
+        if case .direction(let direction) = args.target, let window = target.windowOrNil, usesDwindleGeometry(window, direction),
+           let windowToFocus = dwindleWindowInDirection(window, direction)
+        {
+            return .from(bool: windowToFocus.focusWindow())
+        }
         // todo bug: floating windows break mru
         let floatingWindows = args.floatingAsTiling ? await makeFloatingWindowsSeenAsTiling(workspace: target.workspace) : []
         defer {

@@ -22,6 +22,9 @@ aerospace swap [-h|--help] [--window-id <window-id>] [--swap-focus]
 
 The operation is equivalent to dragging a window with the mouse.
 
+In the xref:guide.adoc#dwindle-layout[dwindle layout], `swap (left|down|up|right)` picks the window like `focus` does there:
+a window that touches the focused one on that side, the most recently focused one if there are several.
+
 // =========================================================== Options
 include::util/conditional-options-header.adoc[]
 

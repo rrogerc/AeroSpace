@@ -16,6 +16,9 @@ struct SwapCommand: Command {
 
         let targetWindow: Window?
         switch args.target.val {
+            case .direction(let direction) where usesDwindleGeometry(currentWindow, direction):
+                targetWindow = dwindleWindowInDirection(currentWindow, direction)
+                    ?? (args.wrapAround ? target.workspace.findLeafWindowRecursive(snappedTo: direction.opposite) : nil)
             case .direction(let direction):
                 switch currentWindow.closestParent(hasChildrenInDirection: direction, withLayout: nil) {
                     case let (parent, ownIndex)?:

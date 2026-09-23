@@ -34,6 +34,9 @@ The argument configures orientation of the newly created container.
 IMPORTANT: `split` command has no effect if `enable-normalization-flatten-containers` is turned on.
 Consider using `join-with` if you want to keep `enable-normalization-flatten-containers` enabled
 
+`split` isn't available in the xref:guide.adoc#dwindle-layout[dwindle layout].
+Use xref:commands.adoc#dwindle[`dwindle preselect`] to choose where the next window goes, or `dwindle togglesplit`.
+
 // =========================================================== Options
 include::util/conditional-options-header.adoc[]
 
