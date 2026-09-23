@@ -413,6 +413,48 @@ enable-normalization-opposite-orientation-for-nested-containers = false
 
 Unless you're hardcore i3 user who knows what they are doing, it's recommended to keep the normalizations enabled.
 
+[#dwindle-layout]
+=== Dwindle layout
+
+NOTE: The dwindle layout is a feature of this fork. Upstream AeroSpace doesn't have it.
+
+The dwindle layout works like https://wiki.hypr.land/Configuring/Layouts/Dwindle-Layout/[Hyprland's]:
+every new window splits the most recently focused tiling window in two,
+side by side if that window is wide enough, and one above the other otherwise.
+When a window closes, the other half of its split takes its space.
+
+[source,toml]
+----
+[dwindle]
+# Turns on the dwindle layout for all workspaces
+enabled = true
+# true: a split keeps its direction once it's made.
+# false: every split picks its direction from its current shape on every layout (Hyprland's default).
+preserve-split = true
+# A split is side by side if its width > height * split-width-multiplier. Raise it for ultrawide monitors.
+# Possible values: 0.1..3.0
+split-width-multiplier = 1.0
+# The share of the first (left or top) window of a new split: 1.0 is 50/50, 1.2 is 60/40.
+# Possible values: 0.1..1.9
+default-split-ratio = 1.0
+# Where the new window goes. 'right' means right or below, 'left' means left or above
+force-split = 'right'
+----
+
+In a dwindle workspace:
+
+* Every `tiles` container is a split of exactly two nodes.
+Nested splits can have the same orientation, and containers with a single child are always flattened,
+whatever the <<normalization,normalization>> settings are.
+* Splits keep their proportions when they change size. `resize` and `balance-sizes` work as usual.
+* A window that becomes tiling in the workspace, for example after `layout tiling` or `move-node-to-workspace`,
+splits the most recently focused tiling window, like a new window does.
+* Accordion containers work like Hyprland groups: they aren't split, and a new window opened while one of their
+windows is focused joins them. `layout accordion` on a split turns it into one.
+* A container that ends up with more than two children, for example after dwindle is turned on or after
+`flatten-workspace-tree`, is folded into a spiral: the first child keeps half of it, and the rest are split the same way.
+* The root container is always `tiles`. `default-root-container-layout` doesn't apply.
+
 [#floating-windows]
 === Floating windows
 

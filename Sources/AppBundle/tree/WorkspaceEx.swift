@@ -10,7 +10,9 @@ extension Workspace {
                     case .vertical: .v
                     case .auto: workspaceMonitor.then { $0.width >= $0.height } ? .h : .v
                 }
-                return TilingContainer(parent: self, adaptiveWeight: 1, orientation, config.defaultRootContainerLayout, index: INDEX_BIND_LAST)
+                // In dwindle, an accordion root would take in every window like a Hyprland group
+                let layout = isDwindle ? .tiles : config.defaultRootContainerLayout
+                return TilingContainer(parent: self, adaptiveWeight: 1, orientation, layout, index: INDEX_BIND_LAST)
             case 1:
                 return containers.singleOrNil().orDie()
             default:

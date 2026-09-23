@@ -32,7 +32,7 @@ extension TilingContainer {
         if orientation == targetOrientation {
             return
         }
-        if config.enableNormalizationOppositeOrientationForNestedContainers {
+        if config.enableNormalizationOppositeOrientationForNestedContainers && nodeWorkspace?.isDwindle != true {
             var orientation = targetOrientation
             parentsWithSelf
                 .filterIsInstance(of: TilingContainer.self)
@@ -43,6 +43,11 @@ extension TilingContainer {
         } else {
             _orientation = targetOrientation
         }
+    }
+
+    /// Dwindle picks the orientation of every split on its own, so unlike changeOrientation, the ancestors don't flip
+    func setOrientationForDwindle(_ orientation: Orientation) {
+        _orientation = orientation
     }
 
     func normalizeOppositeOrientationForNestedContainers() {

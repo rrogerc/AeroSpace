@@ -4,6 +4,11 @@ extension Workspace {
     @MainActor
     func layoutWorkspace() async throws {
         if isEffectivelyEmpty { return }
+        if isDwindle {
+            // A refresh changes the tree after its own normalization (closed and new windows). Dwindle must never
+            // show a split with a hole or a third child
+            normalizeContainers()
+        }
         let rect = workspaceMonitor.visibleRectPaddedByOuterGaps
         let height = workspaceMonitor.layoutHeight(of: rect)
         try await layoutRecursive(rect.topLeftCorner, width: rect.width, height: height, virtual: rect, LayoutContext(self))
@@ -16,7 +21,7 @@ extension MonitorInfo {
     // But I also faced this problem in monitors horizontal configuration. ¯\_(ツ)_/¯
     // Only windows that reach the bottom of the visible rect need it. With a bottom outer gap, the windows are already
     // away from it, and "- 1" would only make the bottom gap 1px bigger than the other gaps
-    fileprivate func layoutHeight(of rect: Rect) -> CGFloat {
+    func layoutHeight(of rect: Rect) -> CGFloat {
         rect.maxY < visibleRect.maxY ? rect.height : rect.height - 1
     }
 }
@@ -126,6 +131,13 @@ extension TilingContainer {
         var point = point
         var virtualPoint = virtual.topLeftCorner
 
+        if context.workspace.isDwindle {
+            // Splits keep their proportions when the container changes size, like in Hyprland. It leaves no delta below
+            let sizes = dwindleSizes(children.map { $0.getWeight(orientation) }, orientation == .h ? width : height)
+            for (child, size) in zip(children, sizes) {
+                child.setWeight(orientation, size)
+            }
+        }
         guard let delta = ((orientation == .h ? width : height) - CGFloat(children.sumOfDouble { $0.getWeight(orientation) }))
             .div(children.count) else { return }
 

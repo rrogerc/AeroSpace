@@ -20,18 +20,18 @@ final class MacWindow: Window {
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
         let rect = try await macApp.getAxRect(windowId, .cancellable)
-        let data = try await unbindAndGetBindingDataForNewWindow(
-            windowId,
-            macApp,
+        let windowType = try await getWindowType(windowId, macApp, .cancellable)
+
+        // atomic synchronous section
+        if let existing = allWindowsMap[windowId] { return existing }
+        // Placement may change the tree (dwindle splits a window), so it runs only once the window is known to be new
+        let data = unbindAndGetBindingDataForNewWindow(
+            windowType,
             isStartup
                 ? (rect?.center.monitorApproximation ?? mainMonitorInfo).activeWorkspace
                 : focus.workspace,
             window: nil,
-            .cancellable,
         )
-
-        // atomic synchronous section
-        if let existing = allWindowsMap[windowId] { return existing }
         let window = MacWindow(windowId, macApp, lastFloatingSize: rect?.size, parent: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
         allWindowsMap[windowId] = window
 
@@ -239,16 +239,24 @@ extension Window {
     func relayoutWindow(on workspace: Workspace, _ cm: CancellationMode, forceTile: Bool = false) async throws {
         let data = forceTile
             ? unbindAndGetBindingDataForNewTilingWindow(workspace, window: self)
-            : try await unbindAndGetBindingDataForNewWindow(self.asMacWindow().windowId, self.asMacWindow().macApp, workspace, window: self, cm)
+            : unbindAndGetBindingDataForNewWindow(
+                try await getWindowType(self.asMacWindow().windowId, self.asMacWindow().macApp, cm),
+                workspace,
+                window: self,
+            )
         bind(to: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
     }
 }
 
+@MainActor
+private func getWindowType(_ windowId: UInt32, _ macApp: MacApp, _ cm: CancellationMode) async throws -> AxUiElementWindowType {
+    try await macApp.getAxUiElementWindowType(windowId, getWindowLevel(for: windowId), cm)
+}
+
 // The function is private because it's unsafe. It leaves the window in unbound state
 @MainActor
-private func unbindAndGetBindingDataForNewWindow(_ windowId: UInt32, _ macApp: MacApp, _ workspace: Workspace, window: Window?, _ cm: CancellationMode) async throws -> BindingData {
-    let windowLevel = getWindowLevel(for: windowId)
-    return switch try await macApp.getAxUiElementWindowType(windowId, windowLevel, cm) {
+private func unbindAndGetBindingDataForNewWindow(_ windowType: AxUiElementWindowType, _ workspace: Workspace, window: Window?) -> BindingData {
+    switch windowType {
         case .popup: BindingData(parent: macosPopupWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
         case .dialog: BindingData(parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
         case .window: unbindAndGetBindingDataForNewTilingWindow(workspace, window: window)
@@ -259,6 +267,7 @@ private func unbindAndGetBindingDataForNewWindow(_ windowId: UInt32, _ macApp: M
 @MainActor
 private func unbindAndGetBindingDataForNewTilingWindow(_ workspace: Workspace, window: Window?) -> BindingData {
     window?.unbindFromParent() // It's important to unbind to get correct data from below
+    if workspace.isDwindle { return dwindleBindingDataForNewTilingWindow(workspace) }
     let mruWindow = workspace.mostRecentWindowRecursive
     if let mruWindow, let tilingParent = mruWindow.parent as? TilingContainer {
         return BindingData(
