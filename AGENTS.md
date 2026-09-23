@@ -28,6 +28,11 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Also touches `Sources/AppBundle/tree/Window.swift`, `Sources/AppBundle/tree/MacWindow.swift`,
   `Sources/AppBundle/windowServer.swift`, `Sources/AppBundle/layout/refresh.swift`.
   Tests: `MacosFallbackFocusTest`, `UnmanagedWindowRescansTest`.
+- **Apps that quit without a termination notification** — macOS never posts `didTerminateApplicationNotification`
+  for some apps (e.g. Clock), so their dead windows stayed in the tree until some unrelated refresh: tiled windows
+  kept their space, and a fullscreen window left alone stayed fullscreen. Such apps still leave
+  `NSWorkspace.runningApplications`, so AeroSpace observes it (KVO) and refreshes the apps that left it
+  (`Sources/AppBundle/GlobalObserver.swift`). No unit test, it's macOS behavior: checked live by quitting Clock.
 - **Workspace switches don't flash the wallpaper** — apps move their windows at their own pace (Zen lands a frame
   after it accepts a move, games much later), so hiding the previous workspace waits until WindowServer shows the
   windows being revealed, for at most 250 ms (`PendingReveals` in `Sources/AppBundle/layout/PendingReveals.swift`).
