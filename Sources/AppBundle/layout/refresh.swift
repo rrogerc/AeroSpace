@@ -102,6 +102,7 @@ func runHeavyCompleteRefreshSession(
 
             await refreshModel_nonCancellable()
             try await refresh(scope)
+            rescanAppsWithUnmanagedWindowsLater()
             gcMonitors()
 
             updateTrayText()

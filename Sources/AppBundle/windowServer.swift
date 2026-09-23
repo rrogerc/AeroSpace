@@ -55,6 +55,12 @@ func windowServerWindowExists(_ windowId: UInt32) -> Bool? {
     return records.contains { ($0[kCGWindowNumber as String] as? UInt32) == windowId }
 }
 
+/// Normal windows (layer 0) on screen. Unlike getOnScreenWindowServerWindows, skips records that can't be read
+func getOnScreenNormalWindows() -> [WindowServerWindowInfo] {
+    let records = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return records.compactMap { WindowServerWindowInfo($0) }.filter { $0.layer == 0 }
+}
+
 func getOnScreenWindowServerWindows() -> [WindowServerWindowInfo]? {
     let state = signposter.beginInterval("observeNativeWindowOrder")
     defer { signposter.endInterval("observeNativeWindowOrder", state) }
