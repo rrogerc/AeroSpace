@@ -104,10 +104,13 @@ func runHeavyCompleteRefreshSession(
             try await refresh(scope)
             rescanAppsWithUnmanagedWindowsLater()
             gcMonitors()
+            try await normalizeLayoutReason(scope: scope)
+            // Closed, minimized and hidden windows leave the tiling tree after the model refresh, and can leave a window
+            // alone in fullscreen. End it before the tray shows fullscreen
+            exitPointlessFullscreen()
 
             updateTrayText()
             SecureInputPanel.shared.refresh()
-            try await normalizeLayoutReason(scope: scope)
             if shouldLayoutWorkspaces { try await layoutWorkspaces() }
         }
     }
