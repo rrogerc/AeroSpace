@@ -5,7 +5,7 @@
 #import <os/signpost.h>
 
 // The legacy Process Manager ABI is two 32-bit words on both supported architectures.
-typedef struct {
+typedef struct AeroProcessSerialNumber {
     uint32_t high;
     uint32_t low;
 } AeroProcessSerialNumber;
@@ -36,7 +36,7 @@ bool AeroSpacePrivateFocusAvailable(void) {
 CGError AeroSpaceMakeKeyWindow(pid_t pid, CGWindowID windowId) {
     if (pid <= 0 || windowId == kCGNullWindowID) return kCGErrorIllegalArgument;
     if (!AeroSpacePrivateFocusAvailable()) return kCGErrorNotImplemented;
-    AeroProcessSerialNumber psn = {0, 0};
+    struct AeroProcessSerialNumber psn = {0, 0};
     os_signpost_id_t timing = os_signpost_id_generate(focusTiming);
     os_signpost_interval_begin(focusTiming, timing, "resolveFocusProcess", "pid: %{public}d", pid);
     int32_t processResult = getProcessForPID(pid, &psn);

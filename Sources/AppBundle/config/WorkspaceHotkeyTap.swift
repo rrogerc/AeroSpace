@@ -7,7 +7,6 @@ import Common
     static let shared = WorkspaceHotkeyTap()
     private static let isEnabled = ProcessInfo.processInfo.environment["AEROSPACE_WORKSPACE_HOTKEY_TAP"] != "0"
     private var port: CFMachPort?
-    private var source: CFRunLoopSource?
     private var routing = WorkspaceHotkeyRouting()
 
     private init() {}
@@ -33,7 +32,7 @@ import Common
             userInfo: nil,
         ), let source = CFMachPortCreateRunLoopSource(nil, port, 0) else { return }
         self.port = port
-        self.source = source
+        // The run loop retains the source for the lifetime of the tap.
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
     }

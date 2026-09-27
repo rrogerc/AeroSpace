@@ -291,7 +291,7 @@ final class WorkspaceGroupVisibilityTest: XCTestCase {
 private final class GroupTestDriver: WorkspaceGroupDriver, Sendable {
     static let initialLayout = NativeDisplaySpaces(display: "display", current: 1, spaces: [.init(id: 1, type: 0, name: nil)])
     struct Commit { let show: [UInt64]; let hide: [UInt64] }
-    struct Assignment { let ids: [UInt32]; let group: UInt64 }
+    struct Assignment { let ids: [UInt32] }
     struct State {
         var layout: NativeDisplaySpaces? = initialLayout
         var owners: [UInt32: Int32] = [10: 100, 20: 200]
@@ -320,7 +320,7 @@ private final class GroupTestDriver: WorkspaceGroupDriver, Sendable {
     }
     func assign(_ ids: [UInt32], to group: WorkspaceVisibilityGroup) -> Bool {
         state.withLock { state in
-            state.assignments.append(Assignment(ids: ids, group: group.id))
+            state.assignments.append(Assignment(ids: ids))
             guard state.failAssignmentAt != state.assignments.count, state.groups[group.id] == group.name else { return false }
             for id in ids { state.memberships[id] = [group.id] }
             return true
