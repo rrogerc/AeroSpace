@@ -202,6 +202,22 @@ return operation also passed five isolated live cycles and 21 mocked cases.
 The supported configuration is one monitor. Private APIs remain subject to macOS
 changes; absent APIs fall back to ordinary corner hiding.
 
+### Refresh cancellation during workspace switches
+
+Workspace commands cancel background refreshes. Previously, cancellation during
+`HiddenWindowParkingWorker.apply` restored the entire hidden group, briefly
+revealing unrelated workspaces before the next layout parked them again. This
+could happen even during a refresh with no membership changes.
+
+An already-started synchronous transition now finishes its membership operations
+and validation, retaining every tracked window. Cancellation invalidates its
+frame/focus gates; the next request reconciles the observed memberships on the
+same actor. Actual driver failures, desktop changes, and explicit shutdown still
+use recovery. Regression tests interrupt queries, creation, reveal, hide, and
+final verification, and cover subsequent requests and retirement of newly parked
+windows. These tests verify the state-machine race; live visual confirmation of
+this fix remains outstanding.
+
 ## Installed verification
 
 Built and installed signed universal app/CLI snapshot `17e9ae53` with the existing

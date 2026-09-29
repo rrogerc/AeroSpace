@@ -72,6 +72,8 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   `focusCache.swift`, `getNativeFocusedWindow.swift`, `MacApp.swift`, and `layout/refresh.swift`. The private return
   operation and cleanup are in `Sources/PrivateApi/WorkspaceGroups.m`. Tests: `HiddenWindowParkingTest`,
   `NativeWorkspaceVisibilityTest`, `NativeDesktopWindowTest`, and `ConfigTest.testNativeWindowHidingIsOptIn`.
+  Interrupted background refreshes finish their started membership transition and cancel stale frame/focus gates,
+  keeping unrelated workspaces parked; treating cancellation as recovery briefly revealed all hidden windows.
   Foreign-desktop windows keep their original workspace/kind without taking a tile (`normalizeLayoutReason.swift`,
   `MacosForeignDesktopWindowsContainer`); focus, corner fallback, and shutdown leave them under macOS control.
   The earlier environment-variable

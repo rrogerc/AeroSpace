@@ -114,6 +114,16 @@ actor HiddenWindowParkingWorker {
 
     func apply(_ windows: [NativeVisibilityWindow], request: UInt64? = nil) -> NativeVisibilityPlan {
         guard !Task.isCancelled, !terminating, accept(request), !recovering else { return currentPlan }
+        // Workspace commands routinely cancel background refreshes. Once this
+        // synchronous transition starts, finish observing and recording its moves:
+        // recovery would reveal every parked workspace just because it was interrupted.
+        // The actor serializes the next request, which reconciles actual memberships.
+        // Its predecessor must not release any stale frame/focus work in the meantime.
+        defer {
+            if Task.isCancelled {
+                for entry in entries.values { entry.gate.cancel() }
+            }
+        }
         guard let layout = driver.display() else {
             suspended = home != nil
             beginRecovery(clearHome: false)
@@ -184,10 +194,6 @@ actor HiddenWindowParkingWorker {
         {
             entry.gate.cancel()
         }
-        if Task.isCancelled {
-            beginRecovery(clearHome: false, restartDelay: .zero)
-            return currentPlan
-        }
         if group == nil, !hide.isEmpty {
             let name = "AeroSpace hidden windows \(getuid()) \(getpid()) \(UUID().uuidString)"
             let id = driver.create(name)
@@ -196,10 +202,6 @@ actor HiddenWindowParkingWorker {
                 return currentPlan
             }
             group = WorkspaceVisibilityGroup(id: id, name: name)
-        }
-        if Task.isCancelled {
-            beginRecovery(clearHome: false, restartDelay: .zero)
-            return currentPlan
         }
         if (!hide.isEmpty || !reveal.isEmpty), !isActive(home) {
             suspended = true
@@ -214,10 +216,6 @@ actor HiddenWindowParkingWorker {
                 return currentPlan
             }
             for id in reveal { memberships[id] = [home.id] }
-        }
-        if Task.isCancelled {
-            beginRecovery(clearHome: false, restartDelay: .zero)
-            return currentPlan
         }
         if !hide.isEmpty, !isActive(home) {
             suspended = true
@@ -256,10 +254,6 @@ actor HiddenWindowParkingWorker {
                 }
                 memberships[window.id] = membership
             }
-        }
-        if Task.isCancelled {
-            beginRecovery(clearHome: false, restartDelay: .zero)
-            return currentPlan
         }
         var next: [UInt32: Entry] = [:]
         for window in windows {

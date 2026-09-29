@@ -100,7 +100,101 @@ final class HiddenWindowParkingTest: XCTestCase {
         XCTAssertTrue(driver.read { $0.created.isEmpty })
     }
 
-    func testCancellationAfterAssignmentRecoversBeforePermittingFallback() async {
+    func testCancellationKeepsOtherWorkspacesParkedUntilTheNextRequest() async throws {
+        for stage in ["query", "create", "reveal", "hide", "verification"] {
+            let driver = HiddenParkingTestDriver()
+            driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+            let recoveries = OSAllocatedUnfairLock(initialState: 0)
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: { recoveries.withLock { $0 += 1 } })
+            let unrelated = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "3")
+            let original = stage == "create" ? [:] : native(await worker.apply(windows() + [unrelated], request: 1))
+            let entered = expectation(description: "Cancelled during \(stage)")
+            let release = DispatchSemaphore(value: 0)
+            let pause: @Sendable () -> Void = { entered.fulfill(); release.wait() }
+            let query = driver.read { $0.ownerQueries } + (stage == "verification" ? 2 : 1)
+            driver.mutate {
+                switch stage {
+                    case "query", "verification": $0.afterOwners = { if $0 == query { pause() } }
+                    case "create": $0.afterCreate = pause
+                    case "reveal": $0.afterReveal = pause
+                    case "hide": $0.afterHide = pause
+                    default: XCTFail("Unknown cancellation stage")
+                }
+            }
+            // Even a no-op background refresh can be cancelled by a workspace command.
+            let visible: UInt32 = stage == "query" ? 10 : 20
+            let desired = windows(visible) + [unrelated]
+            let task = Task.detached { await worker.apply(desired, request: 2) }
+            await fulfillment(of: [entered], timeout: 1)
+            task.cancel()
+            release.signal()
+            let cancelled = native(await task.value)
+            driver.mutate { $0.afterOwners = nil; $0.afterCreate = nil; $0.afterReveal = nil; $0.afterHide = nil }
+
+            let group = try XCTUnwrap(driver.read { $0.created.first })
+            let context = await worker.context()
+            XCTAssertEqual(context.group, group, stage)
+            XCTAssertEqual(driver.read { $0.memberships[visible] }, [1], stage)
+            XCTAssertEqual(driver.read { $0.memberships[visible == 10 ? 20 : 10] }, [group], stage)
+            XCTAssertEqual(driver.read { $0.memberships[30] }, [group], stage)
+            XCTAssertTrue(driver.read { $0.restores.isEmpty }, stage)
+            XCTAssertEqual(recoveries.withLock { $0 }, 0, stage)
+            XCTAssertEqual(Set(cancelled.keys), [10, 20, 30], stage)
+            for entry in cancelled.values { XCTAssertFalse(entry.1.wait(for: RunLoopJob(.cancellable)), stage) }
+            for entry in original.values { XCTAssertFalse(entry.1.isReady, stage) }
+
+            let nextVisible: UInt32 = visible == 10 ? 20 : 10
+            let next = native(await worker.apply(windows(nextVisible) + [unrelated], request: 3))
+            XCTAssertTrue(next[nextVisible]?.1.isReady == true, stage)
+            XCTAssertFalse(next[nextVisible]?.1 === cancelled[nextVisible]?.1, stage)
+            XCTAssertEqual(driver.read { $0.memberships[nextVisible] }, [1], stage)
+            XCTAssertEqual(driver.read { $0.memberships[visible] }, [group], stage)
+            XCTAssertEqual(driver.read { $0.memberships[30] }, [group], stage)
+            XCTAssertEqual(driver.read { $0.created.count }, 1, stage)
+            XCTAssertTrue(driver.read { $0.restores.isEmpty }, stage)
+
+            let stopped = await worker.stop(retry: false, request: 4)
+            XCTAssertTrue(stopped, stage)
+            XCTAssertTrue(driver.read { $0.groups.isEmpty }, stage)
+            XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1], 30: [1]], stage)
+        }
+    }
+
+    func testCancelledRegistrationStillTracksAWindowRetiredByTheNextRequest() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let entered = expectation(description: "New window parked")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate {
+            $0.owners[30] = 300
+            $0.memberships[30] = [1]
+            $0.afterHide = { entered.fulfill(); release.wait() }
+        }
+        let desired = windows() + [NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "3")]
+        let task = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        task.cancel()
+        release.signal()
+        let cancelled = native(await task.value)
+        driver.mutate { $0.afterHide = nil }
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        XCTAssertEqual(driver.read { $0.memberships[30] }, [group])
+        XCTAssertNotNil(cancelled[30])
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+
+        // The AX model can retire this live parked window before the next layout.
+        // Retaining its entry is what makes that layout restore it safely.
+        guard case .offscreen = await worker.apply(windows(), request: 3) else {
+            return XCTFail("A newly parked live window must still be tracked after cancellation")
+        }
+        XCTAssertEqual(driver.read { $0.restores }, [1])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1], 30: [1]])
+        _ = await worker.stop(retry: false)
+    }
+
+    func testFailedAssignmentStillRecoversWhenCancelled() async {
         for failRecovery in [false, true] {
             let driver = HiddenParkingTestDriver()
             let worker = HiddenWindowParkingWorker(driver: driver, retryDelay: .seconds(60), didRecover: {})
@@ -108,6 +202,7 @@ final class HiddenWindowParkingTest: XCTestCase {
             let release = DispatchSemaphore(value: 0)
             driver.mutate {
                 $0.failRestore = failRecovery
+                $0.failHideAfterMove = true
                 $0.afterHide = { entered.fulfill(); release.wait() }
             }
             let desired = windows()
@@ -470,12 +565,14 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var reveals: [[UInt32]] = []
         var restores: [UInt64] = []
         var displayQueries = 0
+        var ownerQueries = 0
         var failOwners = false
         var unreadableMemberships: Set<UInt32> = []
         var failHideAfterMove = false
         var failRestore = false
         var leaveGroupMembershipOnReveal = false
         var afterCreate: (@Sendable () -> Void)?
+        var afterOwners: (@Sendable (Int) -> Void)?
         var afterHide: (@Sendable () -> Void)?
         var afterReveal: (@Sendable () -> Void)?
     }
@@ -492,10 +589,13 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     func display() -> NativeDisplaySpaces? { state.withLock { $0.displayQueries += 1; return $0.layout } }
 
     func owners(_ ids: [UInt32]) -> [UInt32: Int32]? {
-        state.withLock { state in
-            guard !state.failOwners else { return nil }
-            return state.owners.filter { ids.contains($0.key) }
+        let (owners, query, callback) = state.withLock { state in
+            state.ownerQueries += 1
+            let owners = state.failOwners ? nil : state.owners.filter { ids.contains($0.key) }
+            return (owners, state.ownerQueries, state.afterOwners)
         }
+        callback?(query)
+        return owners
     }
 
     func membership(_ id: UInt32) -> [UInt64]? {
