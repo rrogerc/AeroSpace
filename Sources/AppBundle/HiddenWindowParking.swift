@@ -5,6 +5,7 @@ import PrivateApi
 protocol HiddenWindowParkingDriver: Sendable {
     func display() -> NativeDisplaySpaces?
     func owners(_ ids: [UInt32]) -> [UInt32: Int32]?
+    func isAppTerminated(_ pid: Int32) -> Bool
     func membership(_ id: UInt32) -> [UInt64]?
     func create(_ name: String) -> UInt64
     func hide(_ ids: [UInt32], in group: WorkspaceVisibilityGroup) -> Bool
@@ -23,6 +24,11 @@ struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
     func owners(_ ids: [UInt32]) -> [UInt32: Int32]? {
         if ids.isEmpty { return [:] }
         return getWindowServerWindows(ids)?.reduce(into: [:]) { $0[$1.windowId] = $1.pid }
+    }
+
+    func isAppTerminated(_ pid: Int32) -> Bool {
+        // Signal 0 only checks existence. Permission errors do not prove exit.
+        kill(pid, 0) == -1 && errno == ESRCH
     }
 
     func membership(_ id: UInt32) -> [UInt64]? {
@@ -149,9 +155,12 @@ actor HiddenWindowParkingWorker {
         }
         for entry in entries.values where requested[entry.window.id]?.pid != entry.window.pid {
             entry.gate.cancel()
-            if owners[entry.window.id] == entry.window.pid, group != nil {
-                // A live retired window may have been minimized or fullscreened.
-                // Confirm restoration before any fallback AX work can touch it.
+            if owners[entry.window.id] == entry.window.pid, let group, !driver.isAppTerminated(entry.window.pid) {
+                // AX can retire a closing tile before WindowServer drops its
+                // owner. Only a window still parked here needs restoration;
+                // restoring the group for a visible tile flashes other workspaces.
+                // An unknown membership must still take the safe recovery path.
+                if let membership = driver.membership(entry.window.id), !membership.contains(group.id) { continue }
                 beginRecovery(clearHome: false, restartDelay: .zero)
                 return currentPlan
             }

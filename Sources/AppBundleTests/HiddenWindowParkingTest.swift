@@ -160,6 +160,100 @@ final class HiddenWindowParkingTest: XCTestCase {
         _ = await worker.stop(retry: false)
     }
 
+    func testRetiringUnparkedSplitWindowKeepsOtherWorkspacesHidden() async throws {
+        // AX can remove a closing tile while WindowServer still knows its owner.
+        // It may still be home, have lost its memberships, or have moved to a
+        // foreign desktop. None of these requires restoring the hidden group.
+        for membership: [UInt64] in [[1], [], [99]] {
+            let driver = HiddenParkingTestDriver()
+            driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            let split = windows() + [NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "1")]
+            let first = native(await worker.apply(split))
+            let initialContext = await worker.context()
+            let group = try XCTUnwrap(initialContext.group)
+
+            driver.mutate { $0.memberships[10] = membership }
+            let next = native(await worker.apply(split.filter { $0.id != 10 }))
+            let context = await worker.context()
+            XCTAssertEqual(context.group, group)
+            XCTAssertEqual(driver.read { $0.memberships }, [10: membership, 20: [group], 30: [1]])
+            XCTAssertTrue(driver.read { $0.restores.isEmpty && $0.reveals.isEmpty })
+            XCTAssertEqual(driver.read { $0.created.count }, 1)
+            XCTAssertFalse(first[10]?.1.isReady == true)
+            XCTAssertNil(next[10])
+            XCTAssertTrue(next[30]?.1 === first[30]?.1)
+            XCTAssertTrue(next[30]?.1.isReady == true)
+            XCTAssertFalse(next[20]?.1.isReady == true)
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testRetiredWindowWithUnknownMembershipStillRequiresRecovery() async {
+        for failRecovery in [false, true] {
+            let driver = HiddenParkingTestDriver()
+            let worker = HiddenWindowParkingWorker(driver: driver, retryDelay: .seconds(60), didRecover: {})
+            let first = native(await worker.apply(windows()))
+            driver.mutate { $0.unreadableMemberships = [10]; $0.failRestore = failRecovery }
+            let plan = await worker.apply(windows().filter { $0.id != 10 })
+            if failRecovery {
+                guard case .recovering = plan else { return XCTFail("Unknown membership must block fallback until recovery succeeds") }
+                XCTAssertFalse(driver.read { $0.groups.isEmpty })
+            } else {
+                guard case .offscreen = plan else { return XCTFail("Unknown membership requires confirmed restoration") }
+                XCTAssertTrue(driver.read { $0.groups.isEmpty })
+            }
+            XCTAssertEqual(driver.read { $0.restores }, [1])
+            XCTAssertFalse(first[10]?.1.isReady == true)
+            driver.mutate { $0.failRestore = false }
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testQuittingAppKeepsOtherWorkspacesHiddenWhileWindowServerRecordsLinger() async throws {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate {
+            $0.owners = [10: 100, 20: 100, 30: 300, 40: 400]
+            $0.memberships[30] = [1]
+            $0.memberships[40] = [1]
+        }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let remaining = [
+            NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "1"),
+            NativeVisibilityWindow(id: 40, pid: 400, visible: false, workspace: "3"),
+        ]
+        let first = native(await worker.apply(windows(secondPid: 100) + remaining))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+
+        // The quitting app had both a visible tile and another parked window.
+        // Its process is gone, but WindowServer has not removed either record.
+        driver.mutate { $0.terminatedPids = [100] }
+        let next = native(await worker.apply(remaining))
+        let context = await worker.context()
+        XCTAssertEqual(context.group, group)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [group], 30: [1], 40: [group]])
+        XCTAssertTrue(driver.read { $0.restores.isEmpty && $0.reveals.isEmpty })
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        XCTAssertFalse(first[10]?.1.isReady == true)
+        XCTAssertNil(next[10])
+        XCTAssertNil(next[20])
+        XCTAssertTrue(next[30]?.1 === first[30]?.1)
+        XCTAssertTrue(next[30]?.1.isReady == true)
+        XCTAssertFalse(next[40]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testAppTerminationRequiresTheProcessToHaveExited() throws {
+        let driver = WindowServerHiddenParkingDriver()
+        XCTAssertFalse(driver.isAppTerminated(getpid()))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertTrue(driver.isAppTerminated(process.processIdentifier))
+    }
+
     func testPartialFailureKeepsOwnershipAndBlocksNewWorkUntilRecoverySucceeds() async throws {
         let driver = HiddenParkingTestDriver()
         driver.mutate { $0.failHideAfterMove = true; $0.failRestore = true }
@@ -368,6 +462,7 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     struct State {
         var layout: NativeDisplaySpaces? = HiddenParkingTestDriver.layout()
         var owners: [UInt32: Int32] = [10: 100, 20: 200]
+        var terminatedPids: Set<Int32> = []
         var memberships: [UInt32: [UInt64]] = [10: [1], 20: [1]]
         var groups: [UInt64: String] = [:]
         var created: [UInt64] = []
@@ -406,6 +501,8 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     func membership(_ id: UInt32) -> [UInt64]? {
         state.withLock { $0.unreadableMemberships.contains(id) ? nil : $0.memberships[id] }
     }
+
+    func isAppTerminated(_ pid: Int32) -> Bool { state.withLock { $0.terminatedPids.contains(pid) } }
 
     func create(_ name: String) -> UInt64 {
         let (id, callback) = state.withLock {
