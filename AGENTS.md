@@ -76,6 +76,9 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   keeping unrelated workspaces parked; treating cancellation as recovery briefly revealed all hidden windows.
   An unchanged, previously published gate stays valid after membership/home verification so cancellation of a no-op
   refresh cannot discard a destination activation still queued against that gate.
+  Reveals also wait for WindowServer's on-screen list before parking outgoing windows (bounded at 250 ms): native
+  membership alone was acknowledged before incoming windows became visible, intermittently exposing the wallpaper.
+  The recorded shortcut replay went from eight wallpaper flashes in 120 switches to zero with this barrier.
   Foreign-desktop windows keep their original workspace/kind without taking a tile (`normalizeLayoutReason.swift`,
   `MacosForeignDesktopWindowsContainer`); focus, corner fallback, and shutdown leave them under macOS control.
   The earlier environment-variable

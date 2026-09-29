@@ -221,8 +221,59 @@ Actual driver failures, desktop changes, and explicit shutdown still
 use recovery. Regression tests interrupt queries, creation, reveal, hide, and
 final verification, and cover pending activation, subsequent requests, native
 desktop changes during a no-op refresh, and retirement of newly parked windows.
-These tests verify the state-machine races; live visual confirmation that they
-fully explain the intermittent flash remains outstanding.
+These tests verify the state-machine races. The pixel trace below isolated the
+remaining presentation issue after those fixes.
+
+### Captured wallpaper frames
+
+A manual trace on build `0722c21c` captured 19 wallpaper flashes during 323
+Option-key workspace selections between Zen (workspace 1) and fullscreen Ghostty
+over FaceTime (workspace 2). Sixteen lasted one 60 Hz frame and three lasted two.
+The user confirmed seeing the flash during this trace. There was no corresponding
+logical workspace reversal.
+
+The anomalous frames matched a desktop-only ScreenCaptureKit reference: the RMS
+difference across a 16-by-9 RGB grid was 0.173 on the 0–255 scale. Only numeric
+frame fingerprints were retained. This identifies wallpaper appearing between
+the outgoing and incoming windows, rather than another workspace being selected.
+Replaying 120 of the user's actual shortcut timings while keeping Option held
+reproduced eight wallpaper flashes. The earlier individually released shortcuts
+and membership checks had missed this behavior.
+
+A disposable cross-process experiment tested combining the two moves with
+`SLSTransactionAddWindowToSpaceAndRemoveFromSpaces`. The existing bridged move
+succeeded, but the direct transaction did not change either membership with SIP
+enabled. Both fixture windows were restored and removed; user windows were
+unchanged. Inspection showed that the working bridged operation executes its
+fallback in WindowManager's process, unlike a transaction on AeroSpace's own
+connection. The higher-level WM transaction API uses app-scoped window UUIDs;
+no working cross-app batching route was established.
+
+The accepted change waits for all revealed windows to appear in WindowServer's
+on-screen list before hiding outgoing windows. It polls at 4 ms intervals with a
+250 ms budget and retains the final active-desktop validation. Missing visibility
+queries, timeout, and cancellation remain bounded. Public focus and frame gates
+still open only after the outgoing hide; this does not restore the rejected
+early-focus handoff.
+
+Signed build `e908ebc7` passed all 610 Swift tests and the release build. Replaying
+the same 120 shortcut timings produced zero wallpaper flashes across 1,640
+captured display updates, versus eight before the change. No logical workspace,
+native focus, or classified display-content reversal was observed. An earlier
+partial run also had zero flashes across 86 shortcuts but is not used as the
+matched comparison. These captures establish the improvement for this sequence;
+on-screen metadata still is not a general presentation fence.
+
+Installation preserved seven window assignments, frames, Ghostty's fullscreen
+state, focus, and unchanged config. The restoration helper needed to restore
+FaceTime from its configured floating default to tiling, infer its equal split
+from its right-side position because the app constrains its size, and focus the
+saved fullscreen window before leaving its workspace. Exact saved-frame checks
+were retained. The first installation attempt restored the previous binary;
+after the helper was corrected, the original layout was verified before retrying.
+
+Raw fingerprints, the desktop reference, keyboard replay, and isolated probe
+results are retained locally under `.local/remaining-flash/`.
 
 ## Installed verification
 
