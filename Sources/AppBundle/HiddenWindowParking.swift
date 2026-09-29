@@ -1,4 +1,5 @@
 import Common
+import CoreGraphics
 import Foundation
 import PrivateApi
 
@@ -7,6 +8,7 @@ protocol HiddenWindowParkingDriver: Sendable {
     func owners(_ ids: [UInt32]) -> [UInt32: Int32]?
     func isAppTerminated(_ pid: Int32) -> Bool
     func membership(_ id: UInt32) -> [UInt64]?
+    func onScreenWindows(_ ids: [UInt32]) -> Set<UInt32>?
     func create(_ name: String) -> UInt64
     func hide(_ ids: [UInt32], in group: WorkspaceVisibilityGroup) -> Bool
     func reveal(_ ids: [UInt32], from group: WorkspaceVisibilityGroup, home: UInt64) -> Bool
@@ -33,6 +35,12 @@ struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
 
     func membership(_ id: UInt32) -> [UInt64]? {
         (AeroSpaceCopyAllWindowSpaces(id) as? [NSNumber])?.map(\.uint64Value)
+    }
+
+    func onScreenWindows(_ ids: [UInt32]) -> Set<UInt32>? {
+        guard let records = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let requested = Set(ids)
+        return Set(records.compactMap { $0[kCGWindowNumber as String] as? UInt32 }.filter { requested.contains($0) })
     }
 
     func create(_ name: String) -> UInt64 { AeroSpaceCreateWorkspaceGroup(name as CFString) }
@@ -224,6 +232,7 @@ actor HiddenWindowParkingWorker {
             }
             for id in reveal { memberships[id] = [home.id] }
         }
+        if !reveal.isEmpty, !hide.isEmpty { waitForOnScreenReveals(reveal, home: home) }
         if !hide.isEmpty, !isActive(home) {
             suspended = true
             beginRecovery(clearHome: false, restartDelay: .zero)
@@ -277,6 +286,24 @@ actor HiddenWindowParkingWorker {
         entries = next
         validated = true
         return .native(entries.mapValues { ($0.window.pid, $0.gate) })
+    }
+
+    private func waitForOnScreenReveals(_ ids: [UInt32], home: Home) {
+        let state = signposter.beginInterval("waitForNativeReveals")
+        defer { signposter.endInterval("waitForNativeReveals", state) }
+        let wanted = Set(ids)
+        let deadline = ContinuousClock.now + .milliseconds(250)
+        // Membership can change before WindowServer includes the incoming window
+        // on screen. This observation narrows that gap, but does not prove that
+        // pixels have been presented. Keep focus and frame gates closed until hiding.
+        ProcessInfo.processInfo.performActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: "Switching workspaces") { [self] in
+            while !Task.isCancelled && ContinuousClock.now < deadline {
+                guard let visible = driver.onScreenWindows(ids) else { return }
+                if wanted.isSubset(of: visible) { return }
+                guard isActive(home) else { return }
+                usleep(4000)
+            }
+        }
     }
 
     @discardableResult

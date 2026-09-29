@@ -45,6 +45,124 @@ final class HiddenWindowParkingTest: XCTestCase {
         XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
     }
 
+    func testOutgoingWindowsWaitForIncomingOnScreenObservation() async {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let secondIncoming = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "2")
+        let original = native(await worker.apply(windows() + [secondIncoming], request: 1))
+        driver.mutate {
+            $0.notOnScreen = [30]
+            $0.afterOnScreen = { query in
+                XCTAssertEqual(driver.read { $0.hides }, [[20, 30]], "Outgoing windows must remain home until all incoming windows appear")
+                XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1], 30: [1]])
+                XCTAssertFalse(original[20]?.1.isReady == true, "The visibility wait must not release native focus early")
+                XCTAssertFalse(original[30]?.1.isReady == true)
+                if query == 2 { driver.mutate { $0.notOnScreen = [] } }
+            }
+        }
+        let incoming = windows(20) + [NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "2")]
+        let result = native(await worker.apply(incoming, request: 2))
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 3)
+        XCTAssertEqual(driver.read { $0.hides }, [[20, 30], [10]])
+        XCTAssertTrue(result[20]?.1.isReady == true)
+        XCTAssertTrue(result[30]?.1.isReady == true)
+        XCTAssertFalse(result[10]?.1.isReady == true)
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testAlreadyOnScreenIncomingWindowDoesNotKeepPolling() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        _ = native(await worker.apply(windows(20), request: 2))
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 1)
+        XCTAssertEqual(driver.read { $0.hides }, [[20], [10]])
+        _ = await worker.stop(retry: false)
+    }
+
+    func testOnScreenWaitRequiresBothIncomingAndOutgoingWindows() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 0, "Parking alone has no incoming windows to wait for")
+        let bothVisible = windows().map { NativeVisibilityWindow(id: $0.id, pid: $0.pid, visible: true, workspace: $0.workspace) }
+        _ = native(await worker.apply(bothVisible, request: 2))
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 0, "Revealing alone has no outgoing windows to retain")
+        _ = native(await worker.apply(bothVisible, request: 3))
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 0, "An unchanged layout needs no visibility query")
+        _ = await worker.stop(retry: false)
+    }
+
+    func testUnavailableOrMissingOnScreenObservationCannotHoldHidingIndefinitely() async {
+        for unavailable in [true, false] {
+            let driver = HiddenParkingTestDriver()
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            _ = native(await worker.apply(windows(), request: 1))
+            driver.mutate {
+                $0.failOnScreen = unavailable
+                $0.notOnScreen = [20]
+            }
+            let started = ContinuousClock.now
+            let result = native(await worker.apply(windows(20), request: 2))
+            XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+            let queries = driver.read { $0.onScreenQueries }
+            if unavailable { XCTAssertEqual(queries, 1) }
+            else { XCTAssertGreaterThan(queries, 1, "A missing window must be observed again before the deadline") }
+            XCTAssertEqual(driver.read { $0.hides }, [[20], [10]])
+            XCTAssertTrue(result[20]?.1.isReady == true, "Membership still permits focus after the bounded visual wait")
+            XCTAssertTrue(driver.read { $0.restores.isEmpty })
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testNativeDesktopChangeDuringOnScreenWaitPreventsOutgoingHide() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        driver.mutate {
+            $0.notOnScreen = [20]
+            $0.afterOnScreen = { _ in driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2]) } }
+        }
+        let plan = await worker.apply(windows(20), request: 2)
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 1)
+        guard case .suspended = plan else { return XCTFail("Leaving home during the wait must suspend tiling") }
+        XCTAssertEqual(driver.read { $0.hides }, [[20]], "The outgoing window must never be parked from another desktop")
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertEqual(driver.read { $0.restores }, [1])
+        XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+        XCTAssertFalse(original[10]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testCancellationStopsOnScreenPollingButFinishesTheMembershipTransition() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let entered = expectation(description: "Incoming window is not yet on screen")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate {
+            $0.notOnScreen = [20]
+            $0.afterOnScreen = { _ in entered.fulfill(); release.wait() }
+        }
+        let desired = windows(20)
+        let refresh = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+        refresh.cancel()
+        release.signal()
+        let cancelled = native(await refresh.value)
+        driver.mutate { $0.afterOnScreen = nil }
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 1)
+        XCTAssertEqual(driver.read { $0.hides }, [[20], [10]])
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+        for entry in cancelled.values { XCTAssertFalse(entry.1.isReady) }
+        _ = native(await worker.apply(windows(), request: 3))
+        _ = await worker.stop(retry: false)
+    }
+
     func testTwoWindowsOfTheSameAppCanHaveDifferentVisibility() async throws {
         let driver = HiddenParkingTestDriver()
         driver.mutate { $0.owners[20] = 100 }
@@ -641,6 +759,9 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var restores: [UInt64] = []
         var displayQueries = 0
         var ownerQueries = 0
+        var onScreenQueries = 0
+        var notOnScreen: Set<UInt32> = []
+        var failOnScreen = false
         var failOwners = false
         var unreadableMemberships: Set<UInt32> = []
         var failHideAfterMove = false
@@ -648,6 +769,7 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var leaveGroupMembershipOnReveal = false
         var afterCreate: (@Sendable () -> Void)?
         var afterOwners: (@Sendable (Int) -> Void)?
+        var afterOnScreen: (@Sendable (Int) -> Void)?
         var afterHide: (@Sendable () -> Void)?
         var afterReveal: (@Sendable () -> Void)?
     }
@@ -675,6 +797,18 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
 
     func membership(_ id: UInt32) -> [UInt64]? {
         state.withLock { $0.unreadableMemberships.contains(id) ? nil : $0.memberships[id] }
+    }
+
+    func onScreenWindows(_ ids: [UInt32]) -> Set<UInt32>? {
+        let (visible, query, callback) = state.withLock { state in
+            state.onScreenQueries += 1
+            let visible = state.failOnScreen ? nil : Set(ids.filter {
+                !state.notOnScreen.contains($0) && state.memberships[$0] == [state.layout?.current ?? 0]
+            })
+            return (visible, state.onScreenQueries, state.afterOnScreen)
+        }
+        callback?(query)
+        return visible
     }
 
     func isAppTerminated(_ pid: Int32) -> Bool { state.withLock { $0.terminatedPids.contains(pid) } }
