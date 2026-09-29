@@ -41,6 +41,8 @@ func setUpWorkspacesForTests() {
     focusedWindowDeathDate = nil
     frontmostPidForTests = nil
     terminatedPidsForTests = []
+
+    global_layoutForNextDetectedWindow = nil
 }
 
 extension ParsedCmd {

@@ -16,7 +16,7 @@ private func validateStillPopups(scope: RefreshScope) async throws {
         let windowLevel = getWindowLevel(for: popup.windowId)
         if try await popup.isWindowHeuristic(windowLevel, .cancellable) {
             try await popup.relayoutWindow(on: focus.workspace, .cancellable)
-            await tryOnWindowDetected(popup)
+            await runOnWindowDetected(ifConventional: popup)
         }
     }
 }
