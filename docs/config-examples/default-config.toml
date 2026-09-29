@@ -46,6 +46,11 @@ on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
 # Also see: https://nikitabobko.github.io/AeroSpace/goodies#disable-hide-app
 automatically-unhide-macos-hidden-apps = false
 
+# This fork can hide inactive windows in a private parking group with SIP enabled.
+# No extra macOS desktop is created. Currently supported on one monitor.
+# See the "Native window hiding" section of docs/guide.adoc.
+enable-native-window-hiding = false
+
 # List of workspaces that should stay alive even when they contain no windows,
 # even when they are invisible.
 # This config option is only available since 'config-version = 2'

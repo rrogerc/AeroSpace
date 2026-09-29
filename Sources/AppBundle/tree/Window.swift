@@ -9,6 +9,9 @@ open class Window: TreeNode, Hashable {
     var noOuterGapsInFullscreen: Bool = false
     var fullscreenWidth: CGFloat? = nil
     var layoutReason: LayoutReason = .standard
+    // Minimized windows have no workspace parent. Keep the original workspace
+    // while a foreign-desktop window passes through that native state.
+    var foreignNativeDesktopWorkspaceName: String?
 
     @MainActor
     init(id: UInt32, _ app: any AbstractApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -38,6 +41,9 @@ open class Window: TreeNode, Hashable {
     func getTitle(_ cm: CancellationMode) async throws -> String { die("Not implemented") }
     func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { false }
     func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { false } // todo replace with enum MacOsWindowNativeState { normal, fullscreen, invisible }
+    var isMacosAppHidden: Bool { false }
+    @MainActor var isOnForeignNativeDesktop: Bool { false }
+    @MainActor var canReturnFromForeignNativeDesktop: Bool { !isOnForeignNativeDesktop }
     var isHiddenInCorner: Bool { die("Not implemented") }
     /// The window is definitely gone (e.g. its app quit). False when unknown
     var isDestroyed: Bool { die("Not implemented") }
@@ -45,13 +51,15 @@ open class Window: TreeNode, Hashable {
     func getAxRect(_ cm: CancellationMode) async throws -> Rect? { die("Not implemented") }
     func getCenter(_ cm: CancellationMode) async throws -> CGPoint? { try await getAxRect(cm)?.center }
 
-    func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) { die("Not implemented") }
+    @MainActor func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) { die("Not implemented") }
 }
 
 enum LayoutReason: Equatable {
     case standard
     /// Reason for the cur temp layout is macOS native fullscreen, minimize, or hide
     case macos(prevParentKind: NonLeafTreeNodeKind)
+    /// The window still belongs to its AeroSpace workspace, but macOS manages it elsewhere.
+    case foreignNativeDesktop(prevParentKind: NonLeafTreeNodeKind)
 }
 
 extension Window {
@@ -60,6 +68,7 @@ extension Window {
             case .floatingWindowsContainer: true
             case .macosFullscreenWindowsContainer: false
             case .macosHiddenAppsWindowsContainer: false
+            case .macosForeignDesktopWindowsContainer: false
             case .macosMinimizedWindowsContainer: false
             case .macosPopupWindowsContainer: false
             case .tilingContainer: false

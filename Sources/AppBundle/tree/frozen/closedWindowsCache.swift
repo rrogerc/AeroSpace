@@ -33,6 +33,7 @@ struct FrozenWorkspace: Sendable {
         floatingWindows = workspace.floatingWindows.map(FrozenWindow.init)
         macosUnconventionalWindows =
             workspace.macOsNativeHiddenAppsWindowsContainer.children.map { FrozenWindow($0 as! Window) } +
+            workspace.macOsForeignDesktopWindowsContainer.children.map { FrozenWindow($0 as! Window) } +
             workspace.macOsNativeFullscreenWindowsContainer.children.map { FrozenWindow($0 as! Window) }
     }
 }

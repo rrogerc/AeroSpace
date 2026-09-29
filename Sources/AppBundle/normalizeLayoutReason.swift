@@ -24,29 +24,48 @@ private func validateStillPopups(scope: RefreshScope) async throws {
 @MainActor
 private func _normalizeLayoutReason(workspace: Workspace, windows: [Window]) async throws {
     for window in windows {
+        let workspace = window.nodeWorkspace ?? window.foreignNativeDesktopWorkspaceName.map(Workspace.get(byName:)) ?? workspace
         let isMacosFullscreen = try await window.isMacosFullscreen(.cancellable)
         let isMacosMinimized = try await (!isMacosFullscreen).andAsync { @MainActor @Sendable in try await window.isMacosMinimized(.cancellable) }
         let isMacosWindowOfHiddenApp = !isMacosFullscreen && !isMacosMinimized &&
-            !config.automaticallyUnhideMacosHiddenApps && window.macAppUnsafe.nsApp.isHidden
+            !config.automaticallyUnhideMacosHiddenApps && window.isMacosAppHidden
+        // An unknown membership is not evidence that a sidelined window returned.
+        let isOnForeignDesktop = window.isOnForeignNativeDesktop ||
+            (window.foreignNativeDesktopWorkspaceName != nil && !window.canReturnFromForeignNativeDesktop)
+        let wasFocused = focus.windowOrNil == window
+        if isOnForeignDesktop { window.foreignNativeDesktopWorkspaceName = workspace.name }
+        let prevParentKind: NonLeafTreeNodeKind
         switch window.layoutReason {
             case .standard:
                 guard let parent = window.parent else { continue }
-                switch true {
-                    case isMacosFullscreen:
-                        window.layoutReason = .macos(prevParentKind: parent.kind)
-                        window.bind(to: workspace.macOsNativeFullscreenWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
-                    case isMacosMinimized:
-                        window.layoutReason = .macos(prevParentKind: parent.kind)
-                        window.bind(to: macosMinimizedWindowsContainer, adaptiveWeight: 1, index: INDEX_BIND_LAST)
-                    case isMacosWindowOfHiddenApp:
-                        window.layoutReason = .macos(prevParentKind: parent.kind)
-                        window.bind(to: workspace.macOsNativeHiddenAppsWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
-                    default: break
-                }
-            case .macos(let prevParentKind):
-                if !isMacosFullscreen && !isMacosMinimized && !isMacosWindowOfHiddenApp {
-                    try await exitMacOsNativeUnconventionalState(window: window, prevParentKind: prevParentKind, workspace: workspace, .cancellable)
-                }
+                prevParentKind = parent.kind
+            case .macos(let kind), .foreignNativeDesktop(let kind):
+                prevParentKind = kind
+        }
+        let (parent, reason): (NonLeafTreeNodeObject?, LayoutReason) = switch true {
+            case isMacosFullscreen:
+                (workspace.macOsNativeFullscreenWindowsContainer, .macos(prevParentKind: prevParentKind))
+            case isMacosMinimized:
+                (macosMinimizedWindowsContainer, .macos(prevParentKind: prevParentKind))
+            case isMacosWindowOfHiddenApp:
+                (workspace.macOsNativeHiddenAppsWindowsContainer, .macos(prevParentKind: prevParentKind))
+            case isOnForeignDesktop:
+                (workspace.macOsForeignDesktopWindowsContainer, .foreignNativeDesktop(prevParentKind: prevParentKind))
+            default: (nil, .standard)
+        }
+        if let parent {
+            window.layoutReason = reason
+            if window.parent !== parent {
+                window.bind(to: parent, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
+            }
+            if case .foreignNativeDesktop = reason, wasFocused {
+                _ = setFocus(to: workspace.toLiveFocus())
+            }
+        } else {
+            if window.layoutReason != .standard {
+                try await exitMacOsNativeUnconventionalState(window: window, prevParentKind: prevParentKind, workspace: workspace, .cancellable)
+            }
+            window.foreignNativeDesktopWorkspaceName = nil
         }
     }
 }
@@ -68,7 +87,7 @@ func exitMacOsNativeUnconventionalState(
             try await window.relayoutWindow(on: workspace, cm, forceTile: true)
         case .macosPopupWindowsContainer: // Since the window was minimized/fullscreened it was mistakenly detected as popup. Relayout the window
             try await window.relayoutWindow(on: workspace, cm)
-        case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer, .macosHiddenAppsWindowsContainer: // wtf case, should never be possible. But If encounter it, let's just re-layout window
+        case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer, .macosHiddenAppsWindowsContainer, .macosForeignDesktopWindowsContainer: // wtf case, should never be possible. But If encounter it, let's just re-layout window
             try await window.relayoutWindow(on: workspace, cm)
     }
 }

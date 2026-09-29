@@ -90,6 +90,36 @@ static bool validGroups(NSDictionary *groups, bool allowAbsent) {
     return true;
 }
 
+static bool normalHomeExists(uint64_t home) {
+    if (!home || home > INT64_MAX) return false;
+    NSArray *displays = CFBridgingRelease(AeroSpaceCopyNativeDisplays());
+    if (![displays isKindOfClass:NSArray.class] || !displays.count) return false;
+    NSMutableSet<NSNumber *> *seen = [NSMutableSet set];
+    bool foundHome = false;
+    for (NSDictionary *display in displays) {
+        if (![display isKindOfClass:NSDictionary.class] ||
+            ![display[@"Display Identifier"] isKindOfClass:NSString.class] || ![display[@"Display Identifier"] length] ||
+            ![display[@"Spaces"] isKindOfClass:NSArray.class] || ![display[@"Spaces"] count] ||
+            ![display[@"Current Space"] isKindOfClass:NSDictionary.class]) return false;
+        uint64_t current;
+        if (!groupNumber(display[@"Current Space"][@"id64"], &current)) return false;
+        bool foundCurrent = false;
+        for (NSDictionary *space in display[@"Spaces"]) {
+            uint64_t identifier;
+            int64_t type;
+            if (![space isKindOfClass:NSDictionary.class] || !groupNumber(space[@"id64"], &identifier) ||
+                [seen containsObject:@(identifier)] || ![space[@"type"] isKindOfClass:NSNumber.class] ||
+                CFGetTypeID((__bridge CFTypeRef)space[@"type"]) == CFBooleanGetTypeID() ||
+                !CFNumberGetValue((__bridge CFNumberRef)space[@"type"], kCFNumberSInt64Type, &type) || type < 0) return false;
+            [seen addObject:@(identifier)];
+            if (identifier == current) foundCurrent = true;
+            if (identifier == home && type == 0) foundHome = true;
+        }
+        if (!foundCurrent) return false;
+    }
+    return foundHome;
+}
+
 uint64_t AeroSpaceCreateWorkspaceGroup(CFStringRef uniqueName) {
     if (!uniqueName || CFGetTypeID(uniqueName) != CFStringGetTypeID() ||
         !CFStringGetLength(uniqueName) || !AeroSpaceWorkspaceGroupsAvailable()) return 0;
@@ -110,6 +140,37 @@ CFArrayRef AeroSpaceCopyAllWindowSpaces(CGWindowID windowId) {
     return copyGroupMembership(groupConnection(), 15, (__bridge CFArrayRef)@[@(windowId)]);
 }
 
+static NSArray<NSNumber *> *windowGroupSpaces(CGWindowID windowId) {
+    NSArray *membership = CFBridgingRelease(AeroSpaceCopyAllWindowSpaces(windowId));
+    if (![membership isKindOfClass:NSArray.class]) return nil;
+    NSMutableSet<NSNumber *> *seen = [NSMutableSet set];
+    for (id value in membership) {
+        uint64_t identifier;
+        if (!groupNumber(value, &identifier) || [seen containsObject:@(identifier)]) return nil;
+        [seen addObject:@(identifier)];
+    }
+    return membership;
+}
+
+static bool assignWindowsToSpace(NSArray<NSNumber *> *windows, uint64_t target) {
+    if (!windows.count) return true;
+    // Selector 15 removes type 3 groups as well as ordinary native memberships.
+    id<AeroWorkspaceGroupAssignment> operation = [(id<AeroWorkspaceGroupAssignment>)[assignGroupClass alloc]
+        initWithSpaceID:target windows:windows options:15];
+    if (!operation) return false;
+    [operation performWithWMBridgeDelegate];
+    double deadline = NSProcessInfo.processInfo.systemUptime + 1;
+    do {
+        bool ready = true;
+        for (NSNumber *window in windows) {
+            if (![windowGroupSpaces(window.unsignedIntValue) isEqual:@[@(target)]]) ready = false;
+        }
+        if (ready) return true;
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.001]];
+    } while (NSProcessInfo.processInfo.systemUptime < deadline);
+    return false;
+}
+
 bool AeroSpaceAssignWindowsToWorkspaceGroup(const CGWindowID *windowIds, size_t count,
                                            uint64_t groupId, CFStringRef uniqueName) {
     if ((!windowIds && count) || !uniqueName || !AeroSpaceWorkspaceGroupsAvailable()) return false;
@@ -122,26 +183,36 @@ bool AeroSpaceAssignWindowsToWorkspaceGroup(const CGWindowID *windowIds, size_t 
                 if (!windowIds[i]) return false;
                 [windows addObject:@(windowIds[i])];
             }
-            // Selector 15 removes a previous type 3 group as well as native home.
-            // Selector 7 silently leaves both workspace memberships attached.
-            id<AeroWorkspaceGroupAssignment> operation = [(id<AeroWorkspaceGroupAssignment>)[assignGroupClass alloc]
-                initWithSpaceID:groupId windows:windows options:15];
-            if (!operation) return false;
-            [operation performWithWMBridgeDelegate];
-            double deadline = NSProcessInfo.processInfo.systemUptime + 1;
-            do {
-                bool ready = true;
-                for (NSNumber *window in windows) {
-                    NSArray *membership = CFBridgingRelease(AeroSpaceCopyAllWindowSpaces(window.unsignedIntValue));
-                    if (![membership isEqual:@[@(groupId)]]) ready = false;
-                }
-                if (ready) return true;
-                [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.001]];
-            } while (NSProcessInfo.processInfo.systemUptime < deadline);
+            return assignWindowsToSpace(windows, groupId);
         } @catch (NSException *exception) {
             return false;
         }
-        return false;
+    }
+}
+
+bool AeroSpaceReturnWindowsFromWorkspaceGroup(const CGWindowID *windowIds, size_t count,
+                                             uint64_t groupId, CFStringRef uniqueName, uint64_t home) {
+    if ((!windowIds && count) || !uniqueName || !AeroSpaceWorkspaceGroupsAvailable()) return false;
+    @autoreleasepool {
+        @try {
+            if (groupState(groupId, (__bridge NSString *)uniqueName) != AeroSpaceParkingSpaceStateOwned ||
+                !normalHomeExists(home)) return false;
+            NSSet *allowed = [NSSet setWithArray:@[@(groupId), @(home)]];
+            NSMutableArray<NSNumber *> *windows = [NSMutableArray arrayWithCapacity:count];
+            for (size_t i = 0; i < count; ++i) {
+                if (!windowIds[i]) return false;
+                NSArray *membership = windowGroupSpaces(windowIds[i]);
+                // Validate every source before submitting the batch. Never pull a
+                // window back from a desktop or fullscreen Space we do not own.
+                if (!membership.count || ![[NSSet setWithArray:membership] isSubsetOfSet:allowed]) return false;
+                if (![membership isEqual:@[@(home)]]) [windows addObject:@(windowIds[i])];
+            }
+            // Ordinary native moves leave the hidden group attached. Reassigning
+            // with selector 15 restores exclusive home membership without showing the group.
+            return assignWindowsToSpace(windows, home);
+        } @catch (NSException *exception) {
+            return false;
+        }
     }
 }
 
@@ -174,25 +245,23 @@ bool AeroSpaceRestoreWorkspaceGroups(CFDictionaryRef rawGroups, uint64_t home) {
         NSDictionary *groups = (__bridge NSDictionary *)rawGroups;
         if (!validGroups(groups, true)) return false;
         if (!groups.count) return true;
-        NSArray *displays = CFBridgingRelease(AeroSpaceCopyNativeDisplays());
-        bool homeExists = false;
-        for (NSDictionary *display in displays) for (NSDictionary *space in display[@"Spaces"]) {
-            if ([space[@"id64"] unsignedLongLongValue] == home && [space[@"type"] intValue] == 0) homeExists = true;
-        }
-        if (!homeExists) return false;
+        if (!normalHomeExists(home)) return false;
         NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
         if (!windows) return false;
         NSMutableArray<NSNumber *> *restore = [NSMutableArray array];
         NSSet *owned = [NSSet setWithArray:groups.allKeys];
         for (NSDictionary *window in windows) {
             NSNumber *identifier = window[(__bridge NSString *)kCGWindowNumber];
-            NSArray *membership = CFBridgingRelease(AeroSpaceCopyAllWindowSpaces(identifier.unsignedIntValue));
+            NSArray *membership = windowGroupSpaces(identifier.unsignedIntValue);
             if (!membership) return false;
             NSSet *members = [NSSet setWithArray:membership];
             if ([members intersectsSet:owned] && [members isSubsetOfSet:owned]) [restore addObject:identifier];
         }
         for (NSNumber *identifier in restore) {
             CGWindowID wid = identifier.unsignedIntValue;
+            NSArray *membership = windowGroupSpaces(wid);
+            if (!membership || ![[NSSet setWithArray:membership] isSubsetOfSet:owned]) return false;
+            if (!membership.count) continue;
             if (!AeroSpaceMoveWindowsToNativeSpace(&wid, 1, home)) return false;
         }
         double deadline = NSProcessInfo.processInfo.systemUptime + 2;
@@ -200,7 +269,7 @@ bool AeroSpaceRestoreWorkspaceGroups(CFDictionaryRef rawGroups, uint64_t home) {
         do {
             restored = true;
             for (NSNumber *identifier in restore) {
-                NSArray *membership = CFBridgingRelease(AeroSpaceCopyAllWindowSpaces(identifier.unsignedIntValue));
+                NSArray *membership = windowGroupSpaces(identifier.unsignedIntValue);
                 // A closed window no longer needs restoration. An unknown query
                 // is not equivalent to an empty membership list.
                 if (!membership || (membership.count && ![membership containsObject:@(home)])) restored = false;
@@ -208,6 +277,17 @@ bool AeroSpaceRestoreWorkspaceGroups(CFDictionaryRef rawGroups, uint64_t home) {
             if (!restored) [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.005]];
         } while (!restored && NSProcessInfo.processInfo.systemUptime < deadline);
         if (!restored || !validGroups(groups, true)) return false;
+        // A newly created window may have joined a group while restoration was
+        // pending. Retry recovery instead of deleting its only Space.
+        windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
+        if (!windows) return false;
+        for (NSDictionary *window in windows) {
+            NSNumber *identifier = window[(__bridge NSString *)kCGWindowNumber];
+            NSArray *membership = windowGroupSpaces(identifier.unsignedIntValue);
+            if (!membership) return false;
+            NSSet *members = [NSSet setWithArray:membership];
+            if ([members intersectsSet:owned] && [members isSubsetOfSet:owned]) return false;
+        }
         for (NSNumber *identifier in groups) {
             if (groupState(identifier.unsignedLongLongValue, groups[identifier]) == AeroSpaceParkingSpaceStateOwned) {
                 destroyGroup(groupConnection(), identifier.unsignedLongLongValue);

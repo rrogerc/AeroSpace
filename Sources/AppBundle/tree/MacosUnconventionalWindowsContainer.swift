@@ -15,6 +15,14 @@ final class MacosHiddenAppsWindowsContainer: TreeNode, NonLeafTreeNodeObject {
     }
 }
 
+/// Keeps a window's AeroSpace workspace while macOS manages it on another desktop.
+final class MacosForeignDesktopWindowsContainer: TreeNode, NonLeafTreeNodeObject {
+    @MainActor
+    init(parent: Workspace) {
+        super.init(parent: parent, adaptiveWeight: 1, index: INDEX_BIND_LAST)
+    }
+}
+
 @MainActor let macosMinimizedWindowsContainer = MacosMinimizedWindowsContainer()
 final class MacosMinimizedWindowsContainer: TreeNode, NonLeafTreeNodeObject {
     @MainActor

@@ -4,6 +4,10 @@ import AppKit
 final class TestWindow: Window, CustomStringConvertible {
     private var _rect: Rect?
     var isMacosFullscreenForTest = false
+    var isMacosMinimizedForTest = false
+    var isMacosAppHiddenForTest = false
+    var isOnForeignNativeDesktopForTest = false
+    var nativeDesktopMembershipKnownForTest = true
     var isHiddenInCornerForTest = false
     var isDestroyedForTest = false
 
@@ -58,4 +62,10 @@ final class TestWindow: Window, CustomStringConvertible {
     }
 
     override func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { isMacosFullscreenForTest }
+    override func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { isMacosMinimizedForTest }
+    override var isMacosAppHidden: Bool { isMacosAppHiddenForTest }
+    @MainActor override var isOnForeignNativeDesktop: Bool { isOnForeignNativeDesktopForTest }
+    @MainActor override var canReturnFromForeignNativeDesktop: Bool {
+        nativeDesktopMembershipKnownForTest && !isOnForeignNativeDesktopForTest
+    }
 }

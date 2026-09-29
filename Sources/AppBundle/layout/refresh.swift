@@ -234,6 +234,9 @@ private func refresh(_ scope: RefreshScope) async throws {
     }
     for (app, windowIds) in mapping {
         for windowId in windowIds {
+            guard MacWindow.allWindowsMap[windowId] != nil ||
+                NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId)
+            else { continue }
             try await MacWindow.getOrRegister(windowId: windowId, macApp: app)
         }
     }
@@ -314,7 +317,7 @@ private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil) asyn
                 try await workspace.layoutWorkspace()
             }
             return
-        case .recovering:
+        case .recovering, .suspended:
             // AX focus or geometry writes while a window is still parked could
             // activate that native desktop. The worker retries recovery itself.
             return

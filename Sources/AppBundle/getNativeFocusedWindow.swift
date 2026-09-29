@@ -21,6 +21,7 @@ private var focusedApp: (any AbstractApp)? {
 
 @MainActor
 func getNativeFocusedWindow(_ cm: CancellationMode, preferCached: Bool = false) async throws -> Window? {
+    guard NativeWorkspaceVisibility.shared.shouldFollowNativeFocus(nil) else { return nil }
     if preferCached && !isUnitTest,
        let windows = getOnScreenWindowServerWindows(),
        let cached = cachedNativeFocusedWindow(

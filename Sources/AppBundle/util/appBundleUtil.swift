@@ -26,9 +26,10 @@ func initTerminationHandler() {
 private struct AppServerTerminationHandler: TerminationHandler {
     @MainActor
     func beforeTermination() {
-        NativeWorkspaceVisibility.shared.stopBeforeTermination()
+        guard NativeWorkspaceVisibility.shared.stopBeforeTermination() else { return }
         // Make all windows fullscreen before Quit
         for window in MacWindow.allWindowsMap.values {
+            guard window.canReturnFromForeignNativeDesktop else { continue }
             // makeAllWindowsVisibleAndRestoreSize may be invoked when something went wrong (e.g. some windows are unbound)
             // that's why it's not allowed to use `.parent` call in here
             let monitor = window.macApp.getAxRectForTermination(window.windowId)?.center.monitorApproximation ?? mainMonitorInfo

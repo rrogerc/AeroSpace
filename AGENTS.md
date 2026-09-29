@@ -63,6 +63,20 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Docs: the "Dwindle layout" section of `docs/guide.adoc`, `docs/aerospace-dwindle.adoc`.
   Tests: `DwindleTest`, `DwindleCommandTest`, `DwindleMoveFocusTest`, `ConfigTest.testParseDwindle`.
 - **`rebuild-and-install.sh`** — the build/install helper described below.
+- **Hidden native window parking** — `enable-native-window-hiding = true` parks inactive windows in a never-shown,
+  connection-owned WindowServer group, with SIP enabled and no extra normal macOS desktop. Revealed windows return
+  exclusively to the original desktop before public focus/AX frame operations. Currently supports one monitor;
+  missing private APIs fall back to corner hiding. Adding an ordinary desktop does not recreate the group, and
+  leaving the original desktop suspends AeroSpace window work until the user returns. The main state machine is
+  `Sources/AppBundle/HiddenWindowParking.swift`, integrated through `NativeWorkspaceVisibility.swift`,
+  `focusCache.swift`, `getNativeFocusedWindow.swift`, `MacApp.swift`, and `layout/refresh.swift`. The private return
+  operation and cleanup are in `Sources/PrivateApi/WorkspaceGroups.m`. Tests: `HiddenWindowParkingTest`,
+  `NativeWorkspaceVisibilityTest`, `NativeDesktopWindowTest`, and `ConfigTest.testNativeWindowHidingIsOptIn`.
+  Foreign-desktop windows keep their original workspace/kind without taking a tile (`normalizeLayoutReason.swift`,
+  `MacosForeignDesktopWindowsContainer`); focus, corner fallback, and shutdown leave them under macOS control.
+  The earlier environment-variable
+  native-Space/group experiments remain available separately; this config option takes precedence over them.
+  Investigation and live-test evidence: `dev-docs/native-window-hiding.md`.
 
 ## Rebuild, install, and restart — one command
 

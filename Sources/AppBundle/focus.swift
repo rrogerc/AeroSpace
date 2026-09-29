@@ -97,19 +97,44 @@ extension Window {
         }
     }
 
-    @MainActor func toLiveFocusOrNil() -> LiveFocus? { visualWorkspace.map { LiveFocus(windowOrNil: self, workspace: $0) } }
+    @MainActor func toLiveFocusOrNil() -> LiveFocus? {
+        // Native focus can observe a returned window before layout normalization.
+        // Let that observation select its original workspace without stealing it
+        // while it still belongs to another macOS desktop.
+        guard canFocusOnNativeDesktop else { return nil }
+        return visualWorkspace.map { LiveFocus(windowOrNil: self, workspace: $0) }
+    }
+
+    @MainActor fileprivate var canFocusOnNativeDesktop: Bool {
+        switch layoutReason {
+            case .foreignNativeDesktop:
+                canReturnFromForeignNativeDesktop
+            case .macos where !(parent is MacosFullscreenWindowsContainer):
+                !isOnForeignNativeDesktop &&
+                    (foreignNativeDesktopWorkspaceName == nil || canReturnFromForeignNativeDesktop)
+            case .standard, .macos:
+                true
+        }
+    }
 }
 extension Workspace {
     @MainActor func focusWorkspace() -> Bool { setFocus(to: toLiveFocus()) }
 
-    func toLiveFocus() -> LiveFocus {
-        // todo unfortunately mostRecentWindowRecursive may recursively reach empty rootTilingContainer
-        //      while floating or macos unconventional windows might be presented
-        if let wd = mostRecentWindowRecursive ?? anyLeafWindowRecursive {
+    @MainActor func toLiveFocus() -> LiveFocus {
+        if let wd = mostRecentFocusableWindowRecursive {
             LiveFocus(windowOrNil: wd, workspace: self)
         } else {
             LiveFocus(windowOrNil: nil, workspace: self) // emptyWorkspace
         }
+    }
+}
+
+extension TreeNode {
+    @MainActor fileprivate var mostRecentFocusableWindowRecursive: Window? {
+        if let window = self as? Window {
+            return window.canFocusOnNativeDesktop ? window : nil
+        }
+        return mruChildren.lazy.compactMap(\.mostRecentFocusableWindowRecursive).first
     }
 }
 

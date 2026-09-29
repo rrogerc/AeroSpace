@@ -100,6 +100,7 @@ final class MacWindow: Window {
                         deadWindowFocus.windowOrNil?.nativeFocus()
                     }
                 case .macosPopupWindowsContainer, // Don't switch back on popup destruction
+                     .macosForeignDesktopWindowsContainer, // Closing a window on another desktop must not pull focus back
                      .workspace, // Workspace is invalid parent for windows
                      .macosMinimizedWindowsContainer: // Don't switch back on minimized windows destruction
                     break
@@ -110,6 +111,14 @@ final class MacWindow: Window {
     override func getTitle(_ cm: CancellationMode) async throws -> String { try await macApp.getAxTitle(windowId, cm) ?? "" }
     override func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { try await macApp.isMacosNativeFullscreen(windowId, cm) == true }
     override func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { try await macApp.isMacosNativeMinimized(windowId, cm) == true }
+    override var isMacosAppHidden: Bool { macApp.nsApp.isHidden }
+    @MainActor override var isOnForeignNativeDesktop: Bool {
+        NativeWorkspaceVisibility.shared.isWindowOnForeignNativeDesktop(windowId)
+    }
+    @MainActor override var canReturnFromForeignNativeDesktop: Bool {
+        !NativeWorkspaceVisibility.shared.usesHiddenParking ||
+            NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId)
+    }
 
     @MainActor override func nativeFocus() {
         macApp.nativeFocus(windowId)
@@ -125,6 +134,7 @@ final class MacWindow: Window {
     // todo it's part of the window layout and should be moved to layoutRecursive.swift
     @MainActor
     func hideInCorner(_ corner: OptimalHideCorner, observation: HiddenWindowFrameObservation? = nil) async throws {
+        guard canReturnFromForeignNativeDesktop else { return }
         guard let nodeMonitor else { return }
         let observedBounds = observation.flatMap {
             $0.isCurrent(latestFrame: macApp.lastFrameJob(windowId)) ? $0.info.bounds : nil
@@ -141,7 +151,7 @@ final class MacWindow: Window {
             guard let windowRect else { return }
             try checkCancellation()
             // A newer switch can make this workspace visible while its frame read is in flight.
-            guard nodeWorkspace?.isVisible == false else { return }
+            guard nodeWorkspace?.isVisible == false, canReturnFromForeignNativeDesktop else { return }
             // Check for isHiddenInCorner for the second time because of the suspension point above
             if !isHiddenInCorner {
                 let topLeftCorner = windowRect.topLeftCorner
@@ -170,7 +180,7 @@ final class MacWindow: Window {
                 p = nodeMonitor.visibleRect.bottomRightCorner - onePixelOffset
         }
         try checkCancellation()
-        guard nodeWorkspace?.isVisible == false else { return }
+        guard nodeWorkspace?.isVisible == false, canReturnFromForeignNativeDesktop else { return }
         // A completed request is not an acknowledgement of its geometry. Skip only when
         // WindowServer observed the target, and no move has been submitted since that read.
         if observedBounds?.origin == p, observation?.isCurrent(latestFrame: macApp.lastFrameJob(windowId)) == true { return }
@@ -187,6 +197,7 @@ final class MacWindow: Window {
 
     @MainActor
     func unhideFromCorner() {
+        guard canReturnFromForeignNativeDesktop else { return }
         hiddenPlacement = nil
         guard let prevUnhiddenProportionalPositionInsideWorkspaceRect else { return }
         guard let nodeWorkspace else { return } // hiding only makes sense for workspace windows
@@ -210,7 +221,7 @@ final class MacWindow: Window {
                 PendingReveals.shared.add(windowId, pid: macApp.pid, screen: workspaceRect)
             case .tiling:
                 PendingReveals.shared.add(windowId, pid: macApp.pid, screen: nodeWorkspace.workspaceMonitor.rect)
-            case .macosNativeFullscreenWindow, .macosNativeHiddenAppWindow, .macosNativeMinimizedWindow,
+            case .macosNativeFullscreenWindow, .macosNativeHiddenAppWindow, .macosForeignDesktopWindow, .macosNativeMinimizedWindow,
                  .macosPopupWindow, .rootTilingContainer, .shimContainerRelation: break
         }
 
@@ -290,7 +301,7 @@ func tryOnWindowDetected(_ window: Window) async {
         case .tilingContainer, .floatingWindowsContainer, .macosMinimizedWindowsContainer,
              .macosFullscreenWindowsContainer, .macosHiddenAppsWindowsContainer:
             _ = await onWindowDetected(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, window)
-        case .macosPopupWindowsContainer, .unbound:
+        case .macosPopupWindowsContainer, .macosForeignDesktopWindowsContainer, .unbound:
             break
     }
 }

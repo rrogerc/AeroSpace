@@ -53,6 +53,15 @@ extension Workspace {
         }
     }
 
+    @MainActor var macOsForeignDesktopWindowsContainer: MacosForeignDesktopWindowsContainer {
+        let containers = children.filterIsInstance(of: MacosForeignDesktopWindowsContainer.self)
+        return switch containers.count {
+            case 0: MacosForeignDesktopWindowsContainer(parent: self)
+            case 1: containers.singleOrNil().orDie()
+            default: dieT("Workspace must contain zero or one MacosForeignDesktopWindowsContainer")
+        }
+    }
+
     @MainActor var forceAssignedMonitor: MonitorInfo? {
         guard let monitorDescriptions = config.workspaceToMonitorForceAssignment[name] else { return nil }
         let sortedMonitors = sortedMonitorInfos

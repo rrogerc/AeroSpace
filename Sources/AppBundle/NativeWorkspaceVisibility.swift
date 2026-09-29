@@ -15,6 +15,7 @@ enum NativeVisibilityPlan: Sendable {
     case offscreen
     case native([UInt32: (Int32, NativeVisibilityGate)])
     case recovering
+    case suspended
 }
 
 /// A move request is not an acknowledgement. Frame/focus workers wait for the
@@ -93,6 +94,19 @@ final class NativeVisibilityGates: Sendable {
         gates.withLock { gates in
             for (id, entry) in gates where next[id]?.1 !== entry.1 { entry.1.cancel() }
             gates = next
+        }
+    }
+
+    /// A first registration has no old gate for the worker to cancel. Install a
+    /// blocker before an asynchronous native operation can park that window.
+    func blockUnregistered(_ windows: [NativeVisibilityWindow]) {
+        gates.withLock { gates in
+            for window in windows where gates[window.id]?.0 != window.pid {
+                gates[window.id]?.1.cancel()
+                let gate = NativeVisibilityGate()
+                gate.cancel()
+                gates[window.id] = (window.pid, gate)
+            }
         }
     }
 }
@@ -450,12 +464,52 @@ final class NativeWorkspaceVisibility {
     private let requested = ProcessInfo.processInfo.environment["AEROSPACE_NATIVE_WORKSPACE_VISIBILITY"] == "1"
     private let worker = NativeVisibilityWorker()
     private let groupWorker = WorkspaceGroupVisibilityWorker()
+    private let hiddenParkingWorker = HiddenWindowParkingWorker()
     private let useGroups = ProcessInfo.processInfo.environment["AEROSPACE_WORKSPACE_GROUPS"] != "0"
     private var request: UInt64 = 0
-    private var hasNativeWork = false
+    private enum Backend: Sendable { case hiddenParking, groups, managedSpaces }
+    private var activeBackend: Backend?
+    private var hiddenHome: UInt64?
+    private var hiddenGroup: UInt64?
+
+    var usesHiddenParking: Bool { config.enableNativeWindowHiding }
+
+    /// Do not import newly discovered windows from a user's other native desktops
+    /// into the AeroSpace tiling tree. Parked windows remain discoverable here.
+    func shouldRegisterNativeWindow(_ id: UInt32) -> Bool {
+        guard usesHiddenParking, !isUnitTest, !serverArgs.isReadOnly, monitorInfos.count == 1,
+              AeroSpaceWorkspaceGroupsAvailable()
+        else { return true }
+        let home = hiddenHome ?? AeroSpaceActiveNativeSpace()
+        guard home != 0 else { return true }
+        guard let values = AeroSpaceCopyAllWindowSpaces(id) as? [NSNumber] else { return false }
+        let spaces = values.map(\.uint64Value)
+        return spaces == [home] || hiddenGroup.map { spaces == [$0] } == true
+    }
+
+    func isWindowOnForeignNativeDesktop(_ id: UInt32) -> Bool {
+        guard usesHiddenParking, !isUnitTest, let hiddenHome,
+              let values = AeroSpaceCopyAllWindowSpaces(id) as? [NSNumber]
+        else { return false }
+        let spaces = values.map(\.uint64Value)
+        guard !spaces.contains(hiddenHome), hiddenGroup.map({ !spaces.contains($0) }) ?? true,
+              let raw = AeroSpaceCopyNativeDisplays(), let display = NativeDisplaySpaces.decode(raw)
+        else { return false }
+        return display.spaces.contains { $0.id != hiddenHome && ($0.type == 0 || $0.type == 4) && spaces.contains($0.id) }
+    }
+
+    /// Native desktops outside our home remain under macOS control. In particular,
+    /// activation on another desktop must not change the AeroSpace destination that
+    /// recovery will focus when the user comes back.
+    func shouldFollowNativeFocus(_ window: Window?) -> Bool {
+        guard usesHiddenParking, !isUnitTest, let hiddenHome else { return true }
+        guard AeroSpaceActiveNativeSpace() == hiddenHome else { return false }
+        guard let window else { return true }
+        return shouldRegisterNativeWindow(window.windowId)
+    }
 
     func prepareFocus(_ window: Window?) -> WorkspaceFocusPreparation? {
-        guard requested, useGroups, !isUnitTest, monitorInfos.count == 1,
+        guard !usesHiddenParking, requested, useGroups, !isUnitTest, monitorInfos.count == 1,
               let window = window as? MacWindow, window.layoutReason == .standard,
               focus.workspace.allLeafWindowsRecursive.count == 1
         else { return nil }
@@ -466,9 +520,11 @@ final class NativeWorkspaceVisibility {
         // A cancelled AX refresh may finish after a foreground command starts.
         // It must not invalidate that command's request or submit another layout.
         try checkCancellation()
-        guard requested, !isUnitTest, !serverArgs.isReadOnly, monitorInfos.count == 1 else {
+        guard usesHiddenParking || requested, !isUnitTest, !serverArgs.isReadOnly, monitorInfos.count == 1 else {
             return await stop() ? .offscreen : .recovering
         }
+        let backend: Backend = usesHiddenParking ? .hiddenParking : useGroups ? .groups : .managedSpaces
+        if let activeBackend, activeBackend != backend, !(await stop()) { return .recovering }
         request &+= 1
         let request = request
         let windows = Workspace.all.flatMap { workspace in
@@ -478,35 +534,57 @@ final class NativeWorkspaceVisibility {
                 return NativeVisibilityWindow(id: window.windowId, pid: window.app.pid, visible: workspace.isVisible, workspace: workspace.name)
             }
         }
-        hasNativeWork = true // Includes a startup still running on the worker.
+        activeBackend = backend // Includes a startup still running on the worker.
+        if backend == .hiddenParking {
+            NativeVisibilityGates.shared.blockUnregistered(MacWindow.allWindows.map {
+                NativeVisibilityWindow(id: $0.windowId, pid: $0.app.pid, visible: false)
+            })
+        }
         let state = signposter.beginInterval("awaitNativeVisibility", "request: \(request, privacy: .public)")
-        let plan = if useGroups { await groupWorker.apply(windows, request: request, earlyFocus: earlyFocus) }
-        else { await worker.apply(windows, request: request) }
+        let plan: NativeVisibilityPlan = switch backend {
+            case .hiddenParking: await hiddenParkingWorker.apply(windows, request: request)
+            case .groups: await groupWorker.apply(windows, request: request, earlyFocus: earlyFocus)
+            case .managedSpaces: await worker.apply(windows, request: request)
+        }
+        let hiddenContext = if backend == .hiddenParking { await hiddenParkingWorker.context() }
+        else { nil as (home: UInt64?, group: UInt64?)? }
         signposter.endInterval("awaitNativeVisibility", state)
+        if Task.isCancelled, request == self.request { blockWindowWorkDuringRecovery() }
         try checkCancellation()
         guard request == self.request else { throw CancellationError() }
+        if let hiddenContext {
+            hiddenHome = hiddenContext.home
+            hiddenGroup = hiddenContext.group
+        }
         switch plan {
             case .native(let gates): NativeVisibilityGates.shared.replace(gates)
             case .offscreen:
-                hasNativeWork = false
+                // The hidden worker can retain its home while no group is needed.
+                // Explicit disable/reload must still be able to clear that anchor.
+                if backend != .hiddenParking { activeBackend = nil }
                 NativeVisibilityGates.shared.replace([:])
-            case .recovering: blockWindowWorkDuringRecovery()
+            case .recovering, .suspended: blockWindowWorkDuringRecovery()
         }
         return plan
     }
 
     @discardableResult
     func stop() async -> Bool {
-        guard hasNativeWork else { return true }
+        guard let backend = activeBackend else { return true }
         request &+= 1
         let request = request
         blockWindowWorkDuringRecovery()
         // A deliberate disable must not impose fault backoff on the next enable.
-        let recovered = if useGroups { await groupWorker.stop(restartDelay: .zero, request: request) }
-        else { await worker.stop(restartDelay: .zero, request: request) }
+        let recovered = switch backend {
+            case .hiddenParking: await hiddenParkingWorker.stop(restartDelay: .zero, request: request)
+            case .groups: await groupWorker.stop(restartDelay: .zero, request: request)
+            case .managedSpaces: await worker.stop(restartDelay: .zero, request: request)
+        }
         guard request == self.request else { return false }
         if recovered {
-            hasNativeWork = false
+            activeBackend = nil
+            hiddenHome = nil
+            hiddenGroup = nil
             NativeVisibilityGates.shared.replace([:])
         }
         return recovered
@@ -516,23 +594,31 @@ final class NativeWorkspaceVisibility {
         let gate = NativeVisibilityGate()
         gate.cancel()
         var gates: [UInt32: (Int32, NativeVisibilityGate)] = [:]
-        for window in MacWindow.allWindows where window.layoutReason == .standard {
+        for window in MacWindow.allWindows {
             gates[window.windowId] = (window.app.pid, gate)
         }
         NativeVisibilityGates.shared.replace(gates)
     }
 
-    func stopBeforeTermination() {
+    func stopBeforeTermination() -> Bool {
         NativeVisibilityGates.shared.replace([:])
         let semaphore = DispatchSemaphore(value: 0)
+        let result = OSAllocatedUnfairLock(initialState: false)
         let worker = worker
         let groupWorker = groupWorker
-        let useGroups = useGroups
+        let hiddenParkingWorker = hiddenParkingWorker
+        let backend = activeBackend
         Task.detached {
-            if useGroups { await groupWorker.stop(retry: false) }
-            else { await worker.stop(retry: false) }
+            let recovered = switch backend {
+                case .hiddenParking: await hiddenParkingWorker.stop(retry: false)
+                case .groups: await groupWorker.stop(retry: false)
+                case .managedSpaces: await worker.stop(retry: false)
+                case nil: true
+            }
+            result.withLock { $0 = recovered }
             semaphore.signal()
         }
         semaphore.wait()
+        return result.withLock { $0 }
     }
 }

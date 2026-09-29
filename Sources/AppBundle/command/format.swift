@@ -250,6 +250,7 @@ private func toLayoutResult(w: Window) -> Result<Primitive, InterVarExpansionErr
         case .floatingWindow: .success(.string(LayoutCmdArgs.LayoutDescription.floating.rawValue))
         case .macosNativeFullscreenWindow: .success(.string("macos_native_fullscreen"))
         case .macosNativeHiddenAppWindow: .success(.string("macos_native_window_of_hidden_app"))
+        case .macosForeignDesktopWindow: .success(.string("macos_native_other_desktop"))
         case .macosNativeMinimizedWindow: .success(.string("macos_native_minimized"))
         case .macosPopupWindow: .success(.string("NULL-WINDOW-LAYOUT"))
 

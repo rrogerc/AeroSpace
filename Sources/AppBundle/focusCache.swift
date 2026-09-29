@@ -32,6 +32,7 @@ func cachedNativeFocusedWindow(
 ///                      (from nativeFocused to lastKnownNativeFocusedWindowId)
 /// Alternative names: takeFocusFromMacOs, syncFocusFromMacOs
 @MainActor func updateFocusCache(_ nativeFocused: Window?) {
+    guard NativeWorkspaceVisibility.shared.shouldFollowNativeFocus(nativeFocused) else { return }
     if nativeFocused?.parent is MacosPopupWindowsContainer {
         return
     }

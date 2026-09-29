@@ -1,0 +1,460 @@
+@testable import AppBundle
+import Foundation
+import os
+import XCTest
+
+final class HiddenWindowParkingTest: XCTestCase {
+    private func windows(_ visible: UInt32 = 10, secondPid: Int32 = 200) -> [NativeVisibilityWindow] {
+        [
+            NativeVisibilityWindow(id: 10, pid: 100, visible: visible == 10, workspace: "1"),
+            NativeVisibilityWindow(id: 20, pid: secondPid, visible: visible == 20, workspace: "2"),
+        ]
+    }
+
+    private func native(_ plan: NativeVisibilityPlan, file: StaticString = #filePath, line: UInt = #line) -> [UInt32: (Int32, NativeVisibilityGate)] {
+        guard case .native(let gates) = plan else {
+            XCTFail("Expected native visibility", file: file, line: line)
+            return [:]
+        }
+        return gates
+    }
+
+    func testOnlyInactiveWindowsAreParkedAndVisibleWindowsReturnExclusivelyHome() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let first = native(await worker.apply(windows(), request: 1))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [group]])
+        XCTAssertTrue(first[10]?.1.isReady == true)
+        XCTAssertFalse(try XCTUnwrap(first[20]?.1).wait(for: RunLoopJob(.cancellable)))
+        let repeated = native(await worker.apply(windows(), request: 2))
+        XCTAssertTrue(repeated[10]?.1 === first[10]?.1)
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+        XCTAssertTrue(driver.read { $0.reveals.isEmpty })
+
+        let next = native(await worker.apply(windows(20), request: 3))
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        XCTAssertEqual(driver.read { $0.hides }, [[20], [10]])
+        XCTAssertFalse(first[10]?.1.isReady == true)
+        XCTAssertTrue(next[20]?.1.isReady == true)
+        XCTAssertFalse(next[10]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        _ = await worker.stop(retry: false)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+    }
+
+    func testTwoWindowsOfTheSameAppCanHaveDifferentVisibility() async throws {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.owners[20] = 100 }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let first = native(await worker.apply(windows(secondPid: 100)))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        XCTAssertEqual(first[10]?.0, 100)
+        XCTAssertEqual(first[20]?.0, 100)
+        XCTAssertTrue(first[10]?.1.isReady == true)
+        XCTAssertFalse(first[20]?.1.isReady == true)
+        _ = native(await worker.apply(windows(20, secondPid: 100)))
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+        _ = await worker.stop(retry: false)
+    }
+
+    func testRapidAndStaleRequestsKeepTheLatestDestinationAndCancelOldGates() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        for request in 2 ... 20 {
+            let id: UInt32 = request.isMultiple(of: 2) ? 20 : 10
+            let gates = native(await worker.apply(windows(id), request: UInt64(request)))
+            XCTAssertTrue(gates[id]?.1.isReady == true)
+        }
+        let assignments = driver.read { $0.hides.count + $0.reveals.count }
+        let stale = native(await worker.apply(windows(), request: 19))
+        _ = await worker.stop(request: 18)
+        XCTAssertEqual(driver.read { $0.hides.count + $0.reveals.count }, assignments)
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+        XCTAssertTrue(stale[20]?.1.isReady == true)
+        XCTAssertFalse(original[10]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+        _ = await worker.stop(retry: false, request: 21)
+        _ = await worker.apply(windows(), request: 22)
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+    }
+
+    func testCancelledInitialRequestNeverTouchesTheDriver() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let proceed = AwaitableOneTimeBroadcastLatch()
+        let desired = windows()
+        let task = Task.detached {
+            try? await proceed.await()
+            return await worker.apply(desired)
+        }
+        task.cancel()
+        _ = await task.value
+        XCTAssertEqual(driver.read { $0.displayQueries }, 0)
+        XCTAssertTrue(driver.read { $0.created.isEmpty })
+    }
+
+    func testCancellationAfterAssignmentRecoversBeforePermittingFallback() async {
+        for failRecovery in [false, true] {
+            let driver = HiddenParkingTestDriver()
+            let worker = HiddenWindowParkingWorker(driver: driver, retryDelay: .seconds(60), didRecover: {})
+            let entered = expectation(description: "Hide submitted")
+            let release = DispatchSemaphore(value: 0)
+            driver.mutate {
+                $0.failRestore = failRecovery
+                $0.afterHide = { entered.fulfill(); release.wait() }
+            }
+            let desired = windows()
+            let task = Task.detached { await worker.apply(desired) }
+            await fulfillment(of: [entered], timeout: 1)
+            task.cancel()
+            release.signal()
+            let result = await task.value
+            if failRecovery {
+                guard case .recovering = result else { return XCTFail("Parked windows must block fallback until recovery succeeds") }
+                XCTAssertFalse(driver.read { $0.groups.isEmpty })
+                driver.mutate { $0.failRestore = false }
+                let recovered = await worker.retryRecovery()
+                XCTAssertTrue(recovered)
+            } else {
+                guard case .offscreen = result else { return XCTFail("Confirmed cleanup permits fallback") }
+            }
+            XCTAssertTrue(driver.read { $0.groups.isEmpty })
+            XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testLiveRetirementRestoresParkedWindowsBeforeReleasingTheirGates() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let first = native(await worker.apply(windows()))
+        guard case .offscreen = await worker.apply(Array(windows().prefix(1))) else {
+            return XCTFail("A minimized or otherwise retired live window requires restoration")
+        }
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertFalse(first[10]?.1.isReady == true)
+        XCTAssertTrue(driver.read { $0.groups.isEmpty })
+        XCTAssertEqual(driver.read { $0.restores }, [1])
+        _ = native(await worker.apply(windows()))
+        _ = await worker.stop(retry: false)
+    }
+
+    func testClosedWindowsDoNotRequireRebuildingTheParkingGroup() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows()))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        driver.mutate { $0.owners[20] = nil; $0.memberships[20] = nil }
+        _ = native(await worker.apply(Array(windows().prefix(1))))
+        let current = await worker.context()
+        XCTAssertEqual(current.group, group)
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testPartialFailureKeepsOwnershipAndBlocksNewWorkUntilRecoverySucceeds() async throws {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.failHideAfterMove = true; $0.failRestore = true }
+        let recovered = OSAllocatedUnfairLock(initialState: 0)
+        let worker = HiddenWindowParkingWorker(driver: driver, retryDelay: .seconds(60), didRecover: { recovered.withLock { $0 += 1 } })
+        guard case .recovering = await worker.apply(windows()) else { return XCTFail("Partial hide must recover") }
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        guard case .recovering = await worker.apply(windows(20)) else { return XCTFail("Recovery must block new hiding") }
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        XCTAssertEqual(driver.read { $0.groups[group] != nil }, true)
+        driver.mutate { $0.failRestore = false }
+        let finished = await worker.retryRecovery()
+        XCTAssertTrue(finished)
+        XCTAssertTrue(driver.read { $0.groups.isEmpty })
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertEqual(recovered.withLock { $0 }, 1)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testExtraNativeDesktopDoesNotReassignWindowsOrRecreateTheGroup() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows()))
+        let initialContext = await worker.context()
+        let group = try XCTUnwrap(initialContext.group)
+        driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 1, normal: [1, 2]) }
+        _ = native(await worker.apply(windows()))
+        driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 1, normal: [1]) }
+        _ = native(await worker.apply(windows()))
+        let context = await worker.context()
+        XCTAssertEqual(context.home, 1)
+        XCTAssertEqual(context.group, group)
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+        XCTAssertTrue(driver.read { $0.reveals.isEmpty && $0.restores.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testLeavingHomeSuspendsWithoutAdoptingOrPullingBackTheOtherDesktop() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows()))
+        driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2]) }
+        guard case .suspended = await worker.apply(windows()) else { return XCTFail("A foreign desktop must suspend tiling") }
+        let suspended = await worker.context()
+        XCTAssertEqual(suspended.home, 1)
+        XCTAssertNil(suspended.group)
+        XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertFalse(original[10]?.1.isReady == true)
+        guard case .suspended = await worker.apply(windows(20)) else { return XCTFail("Commands must not adopt the other desktop") }
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 1, normal: [1, 2]) }
+        let returned = native(await worker.apply(windows(20)))
+        XCTAssertTrue(returned[20]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.memberships[20] }, [1])
+        _ = await worker.stop(retry: false)
+    }
+
+    func testNativeFullscreenSuspendsAndPreservesItsIndependentMembership() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows()))
+        driver.mutate {
+            $0.layout = HiddenParkingTestDriver.layout(current: 3, normal: [1], fullscreen: [3])
+            $0.memberships[10] = [3]
+        }
+        guard case .suspended = await worker.apply(windows()) else { return XCTFail("Native fullscreen must suspend tiling") }
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [3], 20: [1]])
+        XCTAssertEqual(driver.read { $0.layout?.current }, 3)
+        let context = await worker.context()
+        XCTAssertEqual(context.home, 1)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testRemovingHomeRestoresToAnExistingDesktopBeforeReanchoring() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows()))
+        driver.mutate {
+            $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [2, 4])
+            $0.memberships[10] = [2]
+        }
+        guard case .offscreen = await worker.apply(windows()) else { return XCTFail("Recovery must complete before reanchoring") }
+        let recovered = await worker.context()
+        XCTAssertEqual(recovered.home, 2)
+        XCTAssertNil(recovered.group)
+        XCTAssertEqual(driver.read { $0.restores }, [2])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [2], 20: [2]])
+        _ = native(await worker.apply(windows()))
+        XCTAssertEqual(driver.read { $0.memberships[10] }, [2])
+        XCTAssertEqual(driver.read { $0.created.count }, 2)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testOwnerReuseCannotHideTheReplacementUsingTheOldOwnersRequest() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let previous = native(await worker.apply(windows(20)))
+        driver.mutate { $0.owners[20] = 300; $0.memberships[20] = [1] }
+        let stale = native(await worker.apply(windows()))
+        XCTAssertFalse(stale[20]?.1.isReady == true)
+        XCTAssertFalse(previous[20]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.memberships[20] }, [1])
+        XCTAssertFalse(driver.read { $0.hides.contains([20]) })
+        let replacement = native(await worker.apply(windows(20, secondPid: 300)))
+        XCTAssertEqual(replacement[20]?.0, 300)
+        XCTAssertTrue(replacement[20]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testForeignMembershipIsNeitherMovedNorReleasedForFocusOrFrameWrites() async {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.memberships[10] = [99] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let gates = native(await worker.apply(windows()))
+        XCTAssertFalse(gates[10]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.memberships[10] }, [99])
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+        XCTAssertTrue(driver.read { $0.reveals.isEmpty })
+        _ = await worker.stop(retry: false)
+        XCTAssertEqual(driver.read { $0.memberships[10] }, [99])
+    }
+
+    func testMissingOwnershipOrMembershipQueriesNeverAuthorizeAHide() async {
+        for failOwners in [true, false] {
+            let driver = HiddenParkingTestDriver()
+            driver.mutate {
+                $0.failOwners = failOwners
+                if !failOwners { $0.unreadableMemberships = [20] }
+            }
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            guard case .offscreen = await worker.apply(windows()) else { return XCTFail("Initial query failure must retain fallback") }
+            XCTAssertTrue(driver.read { $0.created.isEmpty && $0.hides.isEmpty })
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testUnacknowledgedReturnCannotReleaseAVisibleGate() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows()))
+        driver.mutate { $0.leaveGroupMembershipOnReveal = true }
+        guard case .offscreen = await worker.apply(windows(20)) else { return XCTFail("A mixed home/group membership requires recovery") }
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertTrue(driver.read { $0.groups.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testDesktopChangeDuringAssignmentRecoversAndSuspends() async {
+        for stage in ["create", "hide", "reveal"] {
+            let driver = HiddenParkingTestDriver()
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            if stage == "reveal" { _ = native(await worker.apply(windows())) }
+            let leaveHome: @Sendable () -> Void = {
+                driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2]) }
+            }
+            driver.mutate {
+                switch stage {
+                    case "create": $0.afterCreate = leaveHome
+                    case "hide": $0.afterHide = leaveHome
+                    default: $0.afterReveal = leaveHome
+                }
+            }
+            let desired = stage == "reveal" ? windows(20) : windows()
+            guard case .suspended = await worker.apply(desired) else {
+                return XCTFail("A desktop switch during \(stage) must not activate home")
+            }
+            XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+            XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+            if stage == "create" { XCTAssertTrue(driver.read { $0.hides.isEmpty }) }
+            if stage == "reveal" { XCTAssertEqual(driver.read { $0.hides }, [[20]]) }
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testExternalStopForgetsHomeOnlyAfterCleanupAndAllowsDeliberateReenableElsewhere() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, retryDelay: .seconds(60), didRecover: {})
+        _ = native(await worker.apply(windows()))
+        driver.mutate { $0.failRestore = true }
+        let stopped = await worker.stop(restartDelay: .zero)
+        XCTAssertFalse(stopped)
+        let unfinished = await worker.context()
+        XCTAssertEqual(unfinished.home, 1)
+        XCTAssertNotNil(unfinished.group)
+        driver.mutate { $0.failRestore = false }
+        let recovered = await worker.retryRecovery()
+        XCTAssertTrue(recovered)
+        let cleared = await worker.context()
+        XCTAssertNil(cleared.home)
+        XCTAssertNil(cleared.group)
+        driver.mutate {
+            $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2])
+            $0.memberships = [10: [2], 20: [2]]
+        }
+        _ = native(await worker.apply(windows()))
+        let reenabled = await worker.context()
+        XCTAssertEqual(reenabled.home, 2)
+        _ = await worker.stop(retry: false)
+    }
+}
+
+private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable {
+    struct State {
+        var layout: NativeDisplaySpaces? = HiddenParkingTestDriver.layout()
+        var owners: [UInt32: Int32] = [10: 100, 20: 200]
+        var memberships: [UInt32: [UInt64]] = [10: [1], 20: [1]]
+        var groups: [UInt64: String] = [:]
+        var created: [UInt64] = []
+        var hides: [[UInt32]] = []
+        var reveals: [[UInt32]] = []
+        var restores: [UInt64] = []
+        var displayQueries = 0
+        var failOwners = false
+        var unreadableMemberships: Set<UInt32> = []
+        var failHideAfterMove = false
+        var failRestore = false
+        var leaveGroupMembershipOnReveal = false
+        var afterCreate: (@Sendable () -> Void)?
+        var afterHide: (@Sendable () -> Void)?
+        var afterReveal: (@Sendable () -> Void)?
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    static func layout(current: UInt64 = 1, normal: [UInt64] = [1], fullscreen: [UInt64] = []) -> NativeDisplaySpaces {
+        NativeDisplaySpaces(display: "display", current: current, spaces:
+            normal.map { .init(id: $0, type: 0, name: nil) } + fullscreen.map { .init(id: $0, type: 4, name: nil) })
+    }
+
+    func read<T: Sendable>(_ body: @Sendable (State) -> T) -> T { state.withLock { body($0) } }
+    func mutate(_ body: @Sendable (inout State) -> Void) { state.withLock(body) }
+    func display() -> NativeDisplaySpaces? { state.withLock { $0.displayQueries += 1; return $0.layout } }
+
+    func owners(_ ids: [UInt32]) -> [UInt32: Int32]? {
+        state.withLock { state in
+            guard !state.failOwners else { return nil }
+            return state.owners.filter { ids.contains($0.key) }
+        }
+    }
+
+    func membership(_ id: UInt32) -> [UInt64]? {
+        state.withLock { $0.unreadableMemberships.contains(id) ? nil : $0.memberships[id] }
+    }
+
+    func create(_ name: String) -> UInt64 {
+        let (id, callback) = state.withLock {
+            let id = UInt64(100 + $0.created.count)
+            $0.created.append(id)
+            $0.groups[id] = name
+            return (id, $0.afterCreate)
+        }
+        callback?()
+        return id
+    }
+
+    func hide(_ ids: [UInt32], in group: WorkspaceVisibilityGroup) -> Bool {
+        let (succeeded, callback) = state.withLock { state in
+            state.hides.append(ids)
+            guard state.groups[group.id] == group.name else { return (false, nil as (@Sendable () -> Void)?) }
+            for id in ids { state.memberships[id] = [group.id] }
+            return (!state.failHideAfterMove, state.afterHide)
+        }
+        callback?()
+        return succeeded
+    }
+
+    func reveal(_ ids: [UInt32], from group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {
+        let (succeeded, callback) = state.withLock { state in
+            state.reveals.append(ids)
+            guard state.groups[group.id] == group.name else { return (false, nil as (@Sendable () -> Void)?) }
+            for id in ids {
+                guard state.memberships[id] == [group.id] else { return (false, nil as (@Sendable () -> Void)?) }
+                state.memberships[id] = state.leaveGroupMembershipOnReveal ? [group.id, home] : [home]
+            }
+            return (true, state.afterReveal)
+        }
+        callback?()
+        return succeeded
+    }
+
+    func restore(_ group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {
+        state.withLock { state in
+            state.restores.append(home)
+            guard !state.failRestore, state.groups[group.id] == group.name,
+                  state.layout?.spaces.contains(where: { $0.id == home && $0.type == 0 }) == true
+            else { return false }
+            for (id, membership) in state.memberships where membership.contains(group.id) {
+                let others = membership.filter { $0 != group.id }
+                state.memberships[id] = others.isEmpty ? [home] : others
+            }
+            state.groups[group.id] = nil
+            return true
+        }
+    }
+}

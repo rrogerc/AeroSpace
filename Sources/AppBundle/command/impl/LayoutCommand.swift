@@ -17,7 +17,7 @@ struct LayoutCommand: Command {
                     case .tilingContainer(let it):
                         node = .tilingContainer(it)
                     case .macosFullscreenWindowsContainer,
-                         .macosHiddenAppsWindowsContainer,
+                         .macosHiddenAppsWindowsContainer, .macosForeignDesktopWindowsContainer,
                          .macosMinimizedWindowsContainer:
                         let msg = "Can't change layout for macOS minimized, fullscreen windows or windows or hidden apps. " +
                             "This behavior is subject to change"

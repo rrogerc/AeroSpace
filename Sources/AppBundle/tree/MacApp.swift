@@ -143,6 +143,7 @@ final class MacApp: AbstractApp {
                 .windowId
         }
         guard let windowId else { return nil }
+        guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return nil }
         return try await MacWindow.getOrRegister(windowId: windowId, macApp: self)
     }
 
@@ -156,6 +157,7 @@ final class MacApp: AbstractApp {
 
     @MainActor func nativeFocus(_ windowId: UInt32, prepared: WorkspaceFocusPreparation? = nil) {
         if serverArgs.isReadOnly { return }
+        guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return }
         if let prepared, prepared.pid != pid || prepared.windowId != windowId || prepared.job.isCancelled { return }
         signposter.emitEvent("nativeFocusRequested")
         if MacApp.focusJob !== prepared?.job { MacApp.focusJob?.cancel() }
@@ -167,8 +169,9 @@ final class MacApp: AbstractApp {
         guard requests != nil else { return }
         let job = prepared?.job ?? RunLoopJob(.cancellable)
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
+        let allowPrivateFocus = !NativeWorkspaceVisibility.shared.usesHiddenParking && PrivateWindowFocus.isEnabled
         let groupPreparation = prepared?.hasStarted == true ? prepared : nil
-        let preparation = if groupPreparation == nil && (visibility != nil || NativeFocusPreparation.isEnabled) && PrivateWindowFocus.isEnabled && monitorInfos.count == 1 && windowsCount == 1 {
+        let preparation = if groupPreparation == nil && (visibility != nil || NativeFocusPreparation.isEnabled) && allowPrivateFocus && monitorInfos.count == 1 && windowsCount == 1 {
             NativeFocusPreparation.shared.prepare(job: job, visibility: visibility) { [pid] in
                 PrivateWindowFocus.makeKeyWindow(pid: pid, windowId: windowId)
             }
@@ -190,7 +193,7 @@ final class MacApp: AbstractApp {
                 job: job,
                 activationOnly: activationOnly,
                 privateRaiseRequired: privateRaiseRequired,
-                makeKeyWindow: { groupPreparation?.waitForResult() ?? preparation?.blockingGet() ?? PrivateWindowFocus.makeKeyWindow(pid: pid, windowId: windowId) },
+                makeKeyWindow: { allowPrivateFocus && (groupPreparation?.waitForResult() ?? preparation?.blockingGet() ?? PrivateWindowFocus.makeKeyWindow(pid: pid, windowId: windowId)) },
                 setMain: { window.set(Ax.isMainAttr, true) },
                 raise: { AXUIElementPerformAction(window, kAXRaiseAction as CFString) },
                 activate: { nsApp.activate(options: .activateIgnoringOtherApps) },
@@ -198,8 +201,9 @@ final class MacApp: AbstractApp {
         }
     }
 
-    func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?, afterReveals: Bool = false) {
+    @MainActor func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?, afterReveals: Bool = false) {
         setFrameJobs.removeValue(forKey: windowId)?.cancel()
+        guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return }
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
         setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }

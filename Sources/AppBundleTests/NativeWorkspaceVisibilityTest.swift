@@ -85,6 +85,38 @@ final class NativeWorkspaceVisibilityTest: XCTestCase {
         XCTAssertFalse(replacement.wait(for: RunLoopJob(.cancellable)))
     }
 
+    func testFirstParkingBlocksNewWindowUntilVisibilityIsPublished() throws {
+        let registry = NativeVisibilityGates()
+        let existing = NativeVisibilityGate()
+        existing.complete(true)
+        registry.replace([1: (100, existing)])
+        registry.blockUnregistered([
+            NativeVisibilityWindow(id: 1, pid: 100, visible: true),
+            NativeVisibilityWindow(id: 2, pid: 200, visible: false),
+        ])
+        XCTAssertTrue(registry.get(1, pid: 100) === existing)
+        XCTAssertTrue(existing.isReady, "An unchanged window keeps its current focus acknowledgement")
+        let blocked = try XCTUnwrap(registry.get(2, pid: 200))
+        XCTAssertFalse(blocked.wait(for: RunLoopJob(.cancellable)), "A cancelled first apply must not leave the parked window ungated")
+
+        let revealed = NativeVisibilityGate()
+        revealed.complete(true)
+        registry.replace([1: (100, existing), 2: (200, revealed)])
+        XCTAssertTrue(registry.get(2, pid: 200)?.isReady == true)
+        XCTAssertFalse(blocked.isReady, "Publishing a new acknowledgement never releases old cancelled work")
+    }
+
+    func testFirstParkingDoesNotReuseAnotherOwnersReadyGate() throws {
+        let registry = NativeVisibilityGates()
+        let old = NativeVisibilityGate()
+        old.complete(true)
+        registry.replace([1: (100, old)])
+        registry.blockUnregistered([NativeVisibilityWindow(id: 1, pid: 200, visible: false)])
+        XCTAssertNil(registry.get(1, pid: 100))
+        XCTAssertFalse(old.isReady)
+        XCTAssertFalse(try XCTUnwrap(registry.get(1, pid: 200)).isReady)
+    }
+
     func testNativeSpaceSnapshotRequiresOneConsistentDisplay() throws {
         let display: [String: Any] = [
             "Display Identifier": "display", "Current Space": ["id64": 1],

@@ -72,6 +72,10 @@ uint64_t AeroSpaceCreateWorkspaceGroup(CFStringRef uniqueName);
 CFArrayRef AeroSpaceCopyAllWindowSpaces(CGWindowID windowId) CF_RETURNS_RETAINED;
 bool AeroSpaceAssignWindowsToWorkspaceGroup(const CGWindowID *windowIds, size_t count,
                                            uint64_t groupId, CFStringRef uniqueName);
+// Returns only windows belonging to the owned group/home, and waits for exclusive
+// normal-home membership. The group is never activated or shown.
+bool AeroSpaceReturnWindowsFromWorkspaceGroup(const CGWindowID *windowIds, size_t count,
+                                             uint64_t groupId, CFStringRef uniqueName, uint64_t home);
 // Dictionaries map group IDs (CFNumber) to their unique names (CFString).
 bool AeroSpaceCommitWorkspaceGroupVisibility(CFDictionaryRef show, CFDictionaryRef hide);
 // Restores windows with no other membership before destroying owned groups.

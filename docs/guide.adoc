@@ -518,6 +518,25 @@ That means, that if AeroSpace crashes badly you will still be able to manually "
 If you want to minimize the visibility of hidden windows, it's recommended to place Dock in the bottom (and additionally turn automatic hiding on)
 ====
 
+=== Native window hiding
+
+This fork supports `enable-native-window-hiding = true` to park inactive windows
+in a private WindowServer group instead of leaving their edges in a screen corner.
+The group is never shown and is not a normal macOS desktop. Revealed windows
+return to the ordinary desktop before AeroSpace positions or focuses them.
+SIP can remain enabled.
+
+This option is off by default and currently supports one monitor. It uses private
+macOS APIs; when they are unavailable, AeroSpace uses the normal corner-hiding
+behavior. Set the option to `false` and reload the config to restore that behavior.
+
+AeroSpace remembers the macOS desktop on which native hiding starts. Adding an
+ordinary desktop does not recreate parking. While another desktop or native
+fullscreen Space is active, AeroSpace restores its parked windows and suspends
+window positioning and focus changes. Returning to the original desktop resumes
+AeroSpace workspaces. Native desktops remain separate from AeroSpace workspaces;
+this option does not make them interchangeable.
+
 === Proper monitor arrangement
 
 Since AeroSpace needs a free space to hide windows in,

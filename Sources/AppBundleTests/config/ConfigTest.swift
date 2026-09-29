@@ -29,6 +29,17 @@ final class ConfigTest: XCTestCase {
         assertEquals(result.warnings, [])
     }
 
+    func testNativeWindowHidingIsOptIn() {
+        assertFalse(parseConfig("").config.enableNativeWindowHiding)
+        let enabled = parseConfig("enable-native-window-hiding = true")
+        assertEquals(enabled.errors, [])
+        assertTrue(enabled.config.enableNativeWindowHiding)
+        assertFalse(parseConfig("enable-native-window-hiding = false").config.enableNativeWindowHiding)
+        let invalid = parseConfig("enable-native-window-hiding = 'true'")
+        assertFalse(invalid.errors.isEmpty)
+        assertFalse(invalid.config.enableNativeWindowHiding)
+    }
+
     func testConfigVersionOutOfBounds() {
         let result = parseConfig(
             """
