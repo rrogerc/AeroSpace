@@ -549,7 +549,10 @@ final class NativeWorkspaceVisibility {
         let hiddenContext = if backend == .hiddenParking { await hiddenParkingWorker.context() }
         else { nil as (home: UInt64?, group: UInt64?)? }
         signposter.endInterval("awaitNativeVisibility", state)
-        if Task.isCancelled, request == self.request { blockWindowWorkDuringRecovery() }
+        // Hidden parking cancels stale and unpublished gates on its actor. An
+        // unchanged published gate may still belong to a queued activation;
+        // replacing it here would discard that activation during a no-op refresh.
+        if Task.isCancelled, request == self.request, backend != .hiddenParking { blockWindowWorkDuringRecovery() }
         try checkCancellation()
         guard request == self.request else { throw CancellationError() }
         if let hiddenContext {

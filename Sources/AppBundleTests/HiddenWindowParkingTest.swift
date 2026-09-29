@@ -100,6 +100,78 @@ final class HiddenWindowParkingTest: XCTestCase {
         XCTAssertTrue(driver.read { $0.created.isEmpty })
     }
 
+    func testCancelledNoOpRefreshDoesNotDiscardPendingActivation() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        let gate = try XCTUnwrap(original[10]?.1)
+        let releaseFocus = AwaitableOneTimeBroadcastLatch()
+        let activations = OSAllocatedUnfairLock(initialState: 0)
+        let focusJob = RunLoopJob(.cancellable)
+        let pendingFocus = Task.detached {
+            try? await releaseFocus.await()
+            guard gate.wait(for: focusJob) else { return }
+            try? performNativeFocus(
+                job: focusJob,
+                activationOnly: true,
+                makeKeyWindow: { false },
+                setMain: {},
+                raise: { .success },
+                activate: { activations.withLock { $0 += 1 } },
+            )
+        }
+
+        let entered = expectation(description: "No-op refresh is querying owners")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate { $0.afterOwners = { _ in entered.fulfill(); release.wait() } }
+        let desired = windows()
+        let refresh = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        refresh.cancel()
+        release.signal()
+        let cancelled = native(await refresh.value)
+        driver.mutate { $0.afterOwners = nil }
+        XCTAssertTrue(cancelled[10]?.1 === gate)
+        XCTAssertTrue(gate.isReady, "The pending focus job still holds this unchanged acknowledgement")
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+
+        let next = native(await worker.apply(desired, request: 3))
+        XCTAssertTrue(next[10]?.1 === gate, "Republishing another gate cannot rescue an already queued activation")
+        await releaseFocus.signalToAll()
+        await pendingFocus.value
+        XCTAssertEqual(activations.withLock { $0 }, 1)
+        _ = await worker.stop(retry: false, request: 4)
+        XCTAssertFalse(gate.isReady)
+    }
+
+    func testCancelledNoOpCannotKeepFocusEnabledAfterLeavingTheNativeDesktop() async throws {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        let gate = try XCTUnwrap(original[10]?.1)
+        let entered = expectation(description: "No-op refresh is querying owners")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate { $0.afterOwners = { _ in entered.fulfill(); release.wait() } }
+        let desired = windows()
+        let refresh = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        refresh.cancel()
+        driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2]) }
+        release.signal()
+        let cancelled = native(await refresh.value)
+        driver.mutate { $0.afterOwners = nil }
+        XCTAssertFalse(gate.wait(for: RunLoopJob(.cancellable)))
+        XCTAssertFalse(cancelled[10]?.1.isReady == true)
+        XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+
+        guard case .suspended = await worker.apply(desired, request: 3) else {
+            return XCTFail("The next refresh must suspend instead of activating the old desktop")
+        }
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+        _ = await worker.stop(retry: false, request: 4)
+    }
+
     func testCancellationKeepsOtherWorkspacesParkedUntilTheNextRequest() async throws {
         for stage in ["query", "create", "reveal", "hide", "verification"] {
             let driver = HiddenParkingTestDriver()
@@ -140,13 +212,16 @@ final class HiddenWindowParkingTest: XCTestCase {
             XCTAssertTrue(driver.read { $0.restores.isEmpty }, stage)
             XCTAssertEqual(recoveries.withLock { $0 }, 0, stage)
             XCTAssertEqual(Set(cancelled.keys), [10, 20, 30], stage)
-            for entry in cancelled.values { XCTAssertFalse(entry.1.wait(for: RunLoopJob(.cancellable)), stage) }
-            for entry in original.values { XCTAssertFalse(entry.1.isReady, stage) }
+            for (id, entry) in cancelled {
+                XCTAssertEqual(entry.1.wait(for: RunLoopJob(.cancellable)), stage == "query" && id == 10, stage)
+            }
+            for (id, entry) in original { XCTAssertEqual(entry.1.isReady, stage == "query" && id == 10, stage) }
 
             let nextVisible: UInt32 = visible == 10 ? 20 : 10
             let next = native(await worker.apply(windows(nextVisible) + [unrelated], request: 3))
             XCTAssertTrue(next[nextVisible]?.1.isReady == true, stage)
             XCTAssertFalse(next[nextVisible]?.1 === cancelled[nextVisible]?.1, stage)
+            XCTAssertFalse(cancelled[visible]?.1.isReady == true, "The next destination must invalidate the previous gate: \(stage)")
             XCTAssertEqual(driver.read { $0.memberships[nextVisible] }, [1], stage)
             XCTAssertEqual(driver.read { $0.memberships[visible] }, [group], stage)
             XCTAssertEqual(driver.read { $0.memberships[30] }, [group], stage)

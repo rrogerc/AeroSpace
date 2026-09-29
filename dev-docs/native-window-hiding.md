@@ -210,13 +210,19 @@ revealing unrelated workspaces before the next layout parked them again. This
 could happen even during a refresh with no membership changes.
 
 An already-started synchronous transition now finishes its membership operations
-and validation, retaining every tracked window. Cancellation invalidates its
-frame/focus gates; the next request reconciles the observed memberships on the
-same actor. Actual driver failures, desktop changes, and explicit shutdown still
+and validation, retaining every tracked window. Cancellation invalidates new and
+stale frame/focus gates; the next request reconciles the observed memberships on
+the same actor. An unchanged, previously published gate remains valid after its
+membership and active home are verified. Cancelling that gate during a no-op
+refresh could discard an activation still queued against it; publishing a fresh
+gate in the next refresh did not rescue the queued job. The caller therefore
+also leaves gate cancellation to the hidden-parking worker.
+Actual driver failures, desktop changes, and explicit shutdown still
 use recovery. Regression tests interrupt queries, creation, reveal, hide, and
-final verification, and cover subsequent requests and retirement of newly parked
-windows. These tests verify the state-machine race; live visual confirmation of
-this fix remains outstanding.
+final verification, and cover pending activation, subsequent requests, native
+desktop changes during a no-op refresh, and retirement of newly parked windows.
+These tests verify the state-machine races; live visual confirmation that they
+fully explain the intermittent flash remains outstanding.
 
 ## Installed verification
 

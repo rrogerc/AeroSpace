@@ -117,11 +117,18 @@ actor HiddenWindowParkingWorker {
         // Workspace commands routinely cancel background refreshes. Once this
         // synchronous transition starts, finish observing and recording its moves:
         // recovery would reveal every parked workspace just because it was interrupted.
-        // The actor serializes the next request, which reconciles actual memberships.
-        // Its predecessor must not release any stale frame/focus work in the meantime.
+        let previousGates = entries.mapValues(\.gate)
+        var validated = false
+        // Cancellation must not publish new acknowledgements, but an unchanged
+        // window can still have a focus job queued against its existing gate.
+        // Keep that gate only after this request validated its membership and
+        // checked that cancellation did not accompany a native desktop switch.
         defer {
             if Task.isCancelled {
-                for entry in entries.values { entry.gate.cancel() }
+                let keepExisting = validated && home.map(isActive) == true
+                for (id, entry) in entries where !keepExisting || previousGates[id] !== entry.gate {
+                    entry.gate.cancel()
+                }
             }
         }
         guard let layout = driver.display() else {
@@ -268,6 +275,7 @@ actor HiddenWindowParkingWorker {
             }
         }
         entries = next
+        validated = true
         return .native(entries.mapValues { ($0.window.pid, $0.gate) })
     }
 
