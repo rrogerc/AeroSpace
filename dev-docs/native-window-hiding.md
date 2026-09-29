@@ -247,3 +247,74 @@ To disable the new backend, set `enable-native-window-hiding = false` and run
 `installation/manage.py rollback --mode native-trial` helper can also restore
 the prior installed build and its environment-only trial; `--mode normal`
 restores the prior build using ordinary corner hiding.
+
+## Rejected shadow-handoff trial (2026-09-29)
+
+A staged reveal/focus/hide implementation was tested in isolated build
+`7bf9d3f3`. It restored incoming windows home, released their frame/focus gates,
+and retained outgoing windows while an asynchronous handoff observed completed
+frame/focus jobs, the destination's frontmost app/window and stable geometry.
+The presentation opportunity was 17 ms, bounded by 200 ms from the original
+request. Request IDs and a synchronously cancelled focus-change ticket protected
+against stale hides; the final hide rechecked owners and desktop memberships.
+Full `./test.sh` and the signed universal release build passed, including new
+staging, cancellation, ownership, recovery and presentation-readiness tests.
+
+The live visual comparison rejected this approach. Six switches between the same
+two single-window workspaces were recorded before and after. The baseline was
+repeated after rollback using the same direct-app AX queries and sampling path
+as the trial; focus readback succeeded in every sample in both matched runs.
+Only exterior border strips were retained. Baseline bright pulses lasted roughly
+33–67 ms. The trial shortened some bright pulses but added dark pulses lasting
+roughly 50–67 ms:
+
+| Exterior strip | Baseline peak bright overshoot | Trial peak bright overshoot | Trial peak dark undershoot |
+| --- | ---: | ---: | ---: |
+| Left | 12.16 | 12.07 | 12.24 |
+| Right | 6.85 | 6.75 | 6.90 |
+| Top | 1.58 | 1.58 | 4.28 |
+
+Values are encoded luma units on a 0–255 scale, relative to stable surrounding
+frames; baseline dark undershoot was zero. The bottom strip was excluded from
+the comparison because Dock appearance affected it. Dark pulses also occurred
+after incoming focus was observed. Metadata queries sometimes took 25–37 ms,
+so their start times do not establish exact visibility/focus transition times.
+These measurements demonstrate a visual regression, not a proof of which
+WindowServer shadow operation produced it.
+
+![Recorded border brightness for one switch on each build](assets/shadow-handoff-brightness.png)
+
+The chart shows the first switch from each matched run; "Before" is the original
+build recorded after rollback, and "After" is the rejected trial. The
+[measurements](assets/shadow-handoff-measurements.json) retain peak excursions and
+per-switch durations for all four strips. Dark values in that file are positive
+undershoot magnitudes. Durations count complete-frame hold intervals beyond a
+0.3-luma tolerance; unchanged frames may be omitted by ScreenCaptureKit.
+
+Both matched runs used the same systemwide AX, frontmost-app, direct-app focused
+window, and managed-window visibility queries, followed by approximately 8 ms
+between samples. The original run recorded 86 pixel frames and 745 native samples;
+the trial recorded 97 pixel frames and 691 native samples. The matched baseline
+also logged query-completion timestamps without adding native queries.
+
+The installed app and CLI were rolled back to `17e9ae53`; all six window
+assignments, layouts, frames, focus, and unchanged config were verified. An
+initial install check also caught stale geometry in inactive workspaces after
+restart. The local restoration helper was corrected to visit and verify every
+occupied workspace before returning to the original focus; it preserves the
+existing strict frame checks.
+
+The rejected production edits were removed from the working tree. The patch,
+isolated source/build, tests, rollback checkpoints and strip-only recordings are
+retained locally on the test machine under `.local/shadow-handoff/`. The chart and
+aggregate measurements above are included in the repository. A simple focus delay
+is not an established solution to this flash.
+
+Read-only follow-up inspection found SkyLight entry points for batching native
+membership changes in one transaction, but their behavior from AeroSpace's
+connection with SIP enabled has not been tested. They do not establish a way to
+include public AX/AppKit focus in that transaction. Apple's documented
+[screen-update suppression](https://developer.apple.com/documentation/appkit/nsdisablescreenupdates%28%29)
+applies to windows owned by the calling process; it is not a verified way to
+present a switch between other apps atomically. No further backend change was
+installed after the rollback.

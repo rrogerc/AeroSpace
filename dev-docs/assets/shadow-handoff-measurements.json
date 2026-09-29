@@ -1,0 +1,174 @@
+[
+  {
+    "side": "left",
+    "before": {
+      "peak_bright_luma": 12.1556,
+      "peak_dark_luma": 0,
+      "bright_durations_ms": [
+        66.667,
+        50.0,
+        33.333,
+        50.001,
+        50.0,
+        33.333
+      ],
+      "dark_durations_ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "after": {
+      "peak_bright_luma": 12.0682,
+      "peak_dark_luma": 12.2438,
+      "bright_durations_ms": [
+        16.667,
+        0,
+        16.667,
+        0,
+        0,
+        0
+      ],
+      "dark_durations_ms": [
+        50.0,
+        50.001,
+        50.0,
+        50.001,
+        66.667,
+        50.001
+      ]
+    }
+  },
+  {
+    "side": "right",
+    "before": {
+      "peak_bright_luma": 6.8461,
+      "peak_dark_luma": 0,
+      "bright_durations_ms": [
+        66.667,
+        50.0,
+        33.333,
+        50.001,
+        50.0,
+        33.333
+      ],
+      "dark_durations_ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "after": {
+      "peak_bright_luma": 6.7453,
+      "peak_dark_luma": 6.8976,
+      "bright_durations_ms": [
+        16.667,
+        0,
+        16.667,
+        0,
+        0,
+        0
+      ],
+      "dark_durations_ms": [
+        50.0,
+        50.001,
+        50.0,
+        50.001,
+        66.667,
+        50.001
+      ]
+    }
+  },
+  {
+    "side": "top",
+    "before": {
+      "peak_bright_luma": 1.5836,
+      "peak_dark_luma": 0,
+      "bright_durations_ms": [
+        66.667,
+        50.0,
+        33.333,
+        50.001,
+        50.0,
+        33.333
+      ],
+      "dark_durations_ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "after": {
+      "peak_bright_luma": 1.5767,
+      "peak_dark_luma": 4.2811,
+      "bright_durations_ms": [
+        16.667,
+        0,
+        16.667,
+        0,
+        0,
+        0
+      ],
+      "dark_durations_ms": [
+        50.0,
+        50.001,
+        50.0,
+        50.001,
+        66.667,
+        50.001
+      ]
+    }
+  },
+  {
+    "side": "bottom",
+    "before": {
+      "peak_bright_luma": 7.8887,
+      "peak_dark_luma": 0,
+      "bright_durations_ms": [
+        66.667,
+        50.0,
+        33.333,
+        50.001,
+        50.0,
+        33.333
+      ],
+      "dark_durations_ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "after": {
+      "peak_bright_luma": 7.8089,
+      "peak_dark_luma": 5.7906,
+      "bright_durations_ms": [
+        33.333,
+        16.667,
+        33.333,
+        0,
+        16.667,
+        16.667
+      ],
+      "dark_durations_ms": [
+        33.333,
+        33.334,
+        33.334,
+        50.001,
+        50.0,
+        33.334
+      ]
+    }
+  }
+]
