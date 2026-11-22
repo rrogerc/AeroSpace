@@ -13,6 +13,8 @@ protocol HiddenWindowParkingDriver: Sendable {
     func hide(_ ids: [UInt32], in group: WorkspaceVisibilityGroup) -> Bool
     func reveal(_ ids: [UInt32], from group: WorkspaceVisibilityGroup, home: UInt64) -> Bool
     func restore(_ group: WorkspaceVisibilityGroup, home: UInt64) -> Bool
+    /// See ActiveLook.events
+    func lookActive(_ id: UInt32, pid: Int32) -> Bool
 }
 
 struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
@@ -60,6 +62,8 @@ struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
     func restore(_ group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {
         AeroSpaceRestoreWorkspaceGroups([NSNumber(value: group.id): group.name] as CFDictionary, home)
     }
+
+    func lookActive(_ id: UInt32, pid: Int32) -> Bool { AeroSpaceSetAppLooksActive(pid, id, true) == .success }
 }
 
 /// Only inactive windows enter the hidden group. Visible windows retain the
@@ -78,6 +82,7 @@ actor HiddenWindowParkingWorker {
     private let driver: any HiddenWindowParkingDriver
     private let didRecover: @Sendable () -> Void
     private let retryDelay: Duration
+    private let mainWindowTimeout: Duration
     private var home: Home?
     private var group: WorkspaceVisibilityGroup?
     private var entries: [UInt32: Entry] = [:]
@@ -93,12 +98,14 @@ actor HiddenWindowParkingWorker {
     init(
         driver: any HiddenWindowParkingDriver = WindowServerHiddenParkingDriver(),
         retryDelay: Duration = .seconds(1),
+        mainWindowTimeout: Duration = .milliseconds(50),
         didRecover: @escaping @Sendable () -> Void = {
             Task.startUnstructured { @MainActor in await recoverNativeWorkspaceVisibility() }
         },
     ) {
         self.driver = driver
         self.retryDelay = retryDelay
+        self.mainWindowTimeout = mainWindowTimeout
         self.didRecover = didRecover
     }
 
@@ -120,7 +127,7 @@ actor HiddenWindowParkingWorker {
         return .offscreen
     }
 
-    func apply(_ windows: [NativeVisibilityWindow], request: UInt64? = nil) -> NativeVisibilityPlan {
+    func apply(_ windows: [NativeVisibilityWindow], request: UInt64? = nil, focus: RevealedFocus? = nil) -> NativeVisibilityPlan {
         guard !Task.isCancelled, !terminating, accept(request), !recovering else { return currentPlan }
         // Workspace commands routinely cancel background refreshes. Once this
         // synchronous transition starts, finish observing and recording its moves:
@@ -226,6 +233,8 @@ actor HiddenWindowParkingWorker {
         // Reveal before hiding the outgoing workspace, without activating either
         // app. Both operations acknowledge membership before releasing any gate.
         if let group, !reveal.isEmpty {
+            // The window that gets the focus arrives with its active look: see ActiveLook
+            if let focus, reveal.contains(focus.windowId), owners[focus.windowId] == focus.pid { showAsActive(focus) }
             guard driver.reveal(reveal, from: group, home: home.id) else {
                 beginRecovery(clearHome: false)
                 return currentPlan
@@ -286,6 +295,24 @@ actor HiddenWindowParkingWorker {
         entries = next
         validated = true
         return .native(entries.mapValues { ($0.window.pid, $0.gate) })
+    }
+
+    private func showAsActive(_ focus: RevealedFocus) {
+        let state = signposter.beginInterval("showAsActive", "window: \(focus.windowId, privacy: .public)")
+        defer { signposter.endInterval("showAsActive", state) }
+        switch focus.look {
+            // The app reads the events while the window is on its way to the screen: there's nothing to wait for
+            case .events: focus.looksActive = driver.lookActive(focus.windowId, pid: focus.pid)
+            case .mainWindow(let send):
+                let request = send()
+                // The window that is leaving has the active look until the new one is on screen, so the reveal
+                // waits for the answer of the app. But a busy app mustn't hold the switch back: without the answer
+                // the window just arrives with the look of an inactive window, as it used to
+                let deadline = ContinuousClock.now + mainWindowTimeout
+                ProcessInfo.processInfo.performActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: "Switching workspaces") {
+                    while !request.isComplete && ContinuousClock.now < deadline { usleep(500) }
+                }
+        }
     }
 
     private func waitForOnScreenReveals(_ ids: [UInt32], home: Home) {

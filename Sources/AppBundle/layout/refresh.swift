@@ -166,11 +166,13 @@ func runLightSession<T>(
         // A queued workspace burst preserves commands/callbacks in order, but
         // only its final destination needs window moves and native activation.
         let layoutDeferred = deferLayout()
-        let earlyFocus = !layoutDeferred && !event.isFocusFollowsMouse && workspaceBefore != focus.workspace && focusBefore != focusAfter
-            ? NativeWorkspaceVisibility.shared.prepareFocus(focusAfter) : nil
+        let focusesNextWorkspace = !layoutDeferred && !event.isFocusFollowsMouse && workspaceBefore != focus.workspace && focusBefore != focusAfter
+        let earlyFocus = focusesNextWorkspace ? NativeWorkspaceVisibility.shared.prepareFocus(focusAfter) : nil
         var handedOff = false
         defer { if !handedOff { earlyFocus?.job.cancel() } }
-        if !event.isFocusFollowsMouse && !layoutDeferred { try await layoutWorkspaces(earlyFocus: earlyFocus) }
+        if !event.isFocusFollowsMouse && !layoutDeferred {
+            try await layoutWorkspaces(earlyFocus: earlyFocus, revealedFocus: focusesNextWorkspace ? focusAfter : nil)
+        }
         if !layoutDeferred && (focusBefore != focusAfter || forceNativeFocus) && layoutFocusToken.isCurrent {
             if let earlyFocus, let window = focusAfter as? MacWindow {
                 window.macAppUnsafe.nativeFocus(window.windowId, prepared: earlyFocus)
@@ -299,7 +301,7 @@ func recoverNativeWorkspaceVisibility() async {
 }
 
 @MainActor
-private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil) async throws {
+private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil, revealedFocus: Window? = nil) async throws {
     try checkCancellation()
     if !TrayMenuModel.shared.isEnabled {
         guard await NativeWorkspaceVisibility.shared.stop() else { return }
@@ -309,7 +311,7 @@ private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil) asyn
         }
         return
     }
-    switch try await NativeWorkspaceVisibility.shared.apply(earlyFocus: earlyFocus) {
+    switch try await NativeWorkspaceVisibility.shared.apply(earlyFocus: earlyFocus, revealedFocus: revealedFocus) {
         case .native:
             for monitor in monitorInfos {
                 let workspace = monitor.activeWorkspace

@@ -33,6 +33,21 @@ bool AeroSpacePrivateFocusAvailable(void) {
     return getProcessForPID && setFrontProcess && postEvent;
 }
 
+// Same window-specific activation sequence as Rift's make_key_window.
+// These records identify the desired key window rather than the app's previous one.
+static CGError postKeyWindowEvents(const AeroProcessSerialNumber *psn, CGWindowID windowId) {
+    uint8_t event[0x100] = {0};
+    event[0x04] = 0xf8;
+    event[0x08] = 0x01;
+    event[0x3a] = 0x10;
+    for (int i = 0; i < 4; ++i) event[0x3c + i] = (uint8_t)(windowId >> (8 * i));
+    for (int i = 0x20; i < 0x30; ++i) event[i] = 0xff;
+    CGError result = postEvent(psn, event);
+    if (result != kCGErrorSuccess) return result;
+    event[0x08] = 0x02;
+    return postEvent(psn, event);
+}
+
 CGError AeroSpaceMakeKeyWindow(pid_t pid, CGWindowID windowId) {
     if (pid <= 0 || windowId == kCGNullWindowID) return kCGErrorIllegalArgument;
     if (!AeroSpacePrivateFocusAvailable()) return kCGErrorNotImplemented;
@@ -43,27 +58,34 @@ CGError AeroSpaceMakeKeyWindow(pid_t pid, CGWindowID windowId) {
     os_signpost_interval_end(focusTiming, timing, "resolveFocusProcess");
     if (processResult != 0) return kCGErrorFailure;
 
-    // Same window-specific activation sequence as Rift's make_key_window.
-    // These records identify the desired key window rather than the app's previous one.
-    uint8_t event[0x100] = {0};
-    event[0x04] = 0xf8;
-    event[0x08] = 0x01;
-    event[0x3a] = 0x10;
-    for (int i = 0; i < 4; ++i) event[0x3c + i] = (uint8_t)(windowId >> (8 * i));
-    for (int i = 0x20; i < 0x30; ++i) event[i] = 0xff;
-
     os_signpost_interval_begin(focusTiming, timing, "activateFocusProcess", "pid: %{public}d window: %{public}u", pid, windowId);
     CGError result = setFrontProcess(&psn, windowId, 0x200); // kCPSUserGenerated
     os_signpost_interval_end(focusTiming, timing, "activateFocusProcess");
     if (result != kCGErrorSuccess) return result;
     os_signpost_interval_begin(focusTiming, timing, "postWindowFocusEvents", "pid: %{public}d window: %{public}u", pid, windowId);
-    result = postEvent(&psn, event);
-    if (result == kCGErrorSuccess) {
-        event[0x08] = 0x02;
-        result = postEvent(&psn, event);
-    }
+    result = postKeyWindowEvents(&psn, windowId);
     os_signpost_interval_end(focusTiming, timing, "postWindowFocusEvents");
     return result;
+}
+
+CGError AeroSpaceSetAppLooksActive(pid_t pid, CGWindowID windowId, bool active) {
+    if (pid <= 0 || windowId == kCGNullWindowID) return kCGErrorIllegalArgument;
+    if (!AeroSpacePrivateFocusAvailable()) return kCGErrorNotImplemented;
+    struct AeroProcessSerialNumber psn = {0, 0};
+    if (getProcessForPID(pid, &psn) != 0) return kCGErrorFailure;
+
+    // The event that AppKit gets when macOS activates or deactivates its app: an AppKit-defined event (type 13)
+    // with the subtype "application activated" (1) or "application deactivated" (2). The same records as yabai's
+    // window_manager_activate_window and window_manager_deactivate_window.
+    uint8_t event[0x100] = {0};
+    event[0x04] = 0xf8;
+    event[0x08] = 0x0d;
+    event[0x8a] = active ? 0x01 : 0x02;
+    for (int i = 0; i < 4; ++i) event[0x3c + i] = (uint8_t)(windowId >> (8 * i));
+    CGError result = postEvent(&psn, event);
+    if (result != kCGErrorSuccess || !active) return result;
+    // An app that believes it's active makes the window key on these events, even if the window isn't on screen.
+    return postKeyWindowEvents(&psn, windowId);
 }
 
 typedef int32_t (*WindowConnectionFn)(void);

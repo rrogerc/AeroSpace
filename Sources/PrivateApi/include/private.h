@@ -28,6 +28,10 @@ AXError _AXUIElementGetWindow(AXUIElementRef element, uint32_t *identifier);
 // Resolved at runtime so an unavailable private API can use the public focus path.
 bool AeroSpacePrivateFocusAvailable(void);
 CGError AeroSpaceMakeKeyWindow(pid_t pid, CGWindowID windowId);
+// Tells an app that it's active and that windowId is its key window (active = true), or that it's inactive again,
+// without making it the frontmost app. The app draws its windows accordingly: the title bar, and the shadow.
+// The app that is really frontmost isn't told anything, and keeps the keyboard.
+CGError AeroSpaceSetAppLooksActive(pid_t pid, CGWindowID windowId, bool active);
 
 typedef struct {
     CGWindowID windowId;

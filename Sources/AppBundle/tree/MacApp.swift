@@ -1,5 +1,6 @@
 import AppKit
 import Common
+import PrivateApi
 
 // Potential alternative implementation
 // https://github.com/swiftlang/swift-evolution/blob/main/proposals/0392-custom-actor-executors.md
@@ -160,6 +161,7 @@ final class MacApp: AbstractApp {
         guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return }
         if let prepared, prepared.pid != pid || prepared.windowId != windowId || prepared.job.isCancelled { return }
         signposter.emitEvent("nativeFocusRequested")
+        ActiveLookingApp.shared.focusGoes(to: pid)
         if MacApp.focusJob !== prepared?.job { MacApp.focusJob?.cancel() }
         // Performance optimization. If possible avoid doing AX requests
         // (important for apps which are slow at responding even such basic AX requests. E.g. Godot)
@@ -199,6 +201,32 @@ final class MacApp: AbstractApp {
                 activate: { nsApp.activate(options: .activateIgnoringOtherApps) },
             )
         }
+    }
+
+    /// How the window gets its active look before a workspace switch reveals and focuses it. nil if it has it already
+    @MainActor func activeLook(_ windowId: UInt32) -> ActiveLook? {
+        guard !serverArgs.isReadOnly, let requests else { return nil }
+        let kind = ActiveLook.kind(
+            pid: pid,
+            windowId: windowId,
+            frontmostPid: frontmostPid,
+            appWindowsCount: windowsCount,
+            appMainWindowId: lastNativeFocusedWindowId,
+        )
+        let look: ActiveLook? = switch kind {
+            case .events: PrivateWindowFocus.isEnabled && AeroSpacePrivateFocusAvailable() ? .events : nil
+            case .mainWindow:
+                .mainWindow { [windows] in
+                    requests.runAsync(job: RunLoopJob(.cancellable)) { _ in
+                        windows.threadGuarded[windowId]?.ax.set(Ax.isMainAttr, true)
+                    }
+                }
+            case nil: nil
+        }
+        // Either way the app gets a new key window without its focus being synced, so the next focus of any of its
+        // windows mustn't count on the old one: see activationOnly in nativeFocus
+        if look != nil, lastNativeFocusedWindowId != windowId { lastNativeFocusedWindowId = nil }
+        return look
     }
 
     @MainActor func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?, afterReveals: Bool = false) {

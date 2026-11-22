@@ -508,6 +508,16 @@ final class NativeWorkspaceVisibility {
         return shouldRegisterNativeWindow(window.windowId)
     }
 
+    /// The window of a hidden workspace that is about to be revealed and focused. It gets its active look before
+    /// it's on screen: see ActiveLook
+    private func revealedFocus(_ window: Window?) -> RevealedFocus? {
+        guard hiddenGroup != nil, let window = window as? MacWindow, window.layoutReason == .standard else { return nil }
+        let app = window.macApp
+        // A ready gate means that the window is on screen already
+        if NativeVisibilityGates.shared.get(window.windowId, pid: app.pid)?.isReady == true { return nil }
+        return app.activeLook(window.windowId).map { RevealedFocus(windowId: window.windowId, pid: app.pid, look: $0) }
+    }
+
     func prepareFocus(_ window: Window?) -> WorkspaceFocusPreparation? {
         guard !usesHiddenParking, requested, useGroups, !isUnitTest, monitorInfos.count == 1,
               let window = window as? MacWindow, window.layoutReason == .standard,
@@ -516,7 +526,8 @@ final class NativeWorkspaceVisibility {
         return window.macAppUnsafe.prepareWorkspaceFocus(window.windowId)
     }
 
-    func apply(earlyFocus: WorkspaceFocusPreparation? = nil) async throws -> NativeVisibilityPlan {
+    /// `revealedFocus` is the window that a workspace switch focuses after this
+    func apply(earlyFocus: WorkspaceFocusPreparation? = nil, revealedFocus: Window? = nil) async throws -> NativeVisibilityPlan {
         // A cancelled AX refresh may finish after a foreground command starts.
         // It must not invalidate that command's request or submit another layout.
         try checkCancellation()
@@ -540,15 +551,20 @@ final class NativeWorkspaceVisibility {
                 NativeVisibilityWindow(id: $0.windowId, pid: $0.app.pid, visible: false)
             })
         }
+        let focus = backend == .hiddenParking ? self.revealedFocus(revealedFocus) : nil
+        let looksActive = focus.flatMap {
+            if case .events = $0.look { ActiveLookingApp.shared.willLookActive(pid: $0.pid, windowId: $0.windowId) } else { nil }
+        }
         let state = signposter.beginInterval("awaitNativeVisibility", "request: \(request, privacy: .public)")
         let plan: NativeVisibilityPlan = switch backend {
-            case .hiddenParking: await hiddenParkingWorker.apply(windows, request: request)
+            case .hiddenParking: await hiddenParkingWorker.apply(windows, request: request, focus: focus)
             case .groups: await groupWorker.apply(windows, request: request, earlyFocus: earlyFocus)
             case .managedSpaces: await worker.apply(windows, request: request)
         }
         let hiddenContext = if backend == .hiddenParking { await hiddenParkingWorker.context() }
         else { nil as (home: UInt64?, group: UInt64?)? }
         signposter.endInterval("awaitNativeVisibility", state)
+        if let looksActive, focus?.looksActive != true { ActiveLookingApp.shared.wasNotTold(looksActive) }
         // Hidden parking cancels stale and unpublished gates on its actor. An
         // unchanged published gate may still belong to a queued activation;
         // replacing it here would discard that activation during a no-op refresh.

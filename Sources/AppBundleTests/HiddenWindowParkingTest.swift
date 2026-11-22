@@ -45,6 +45,85 @@ final class HiddenWindowParkingTest: XCTestCase {
         XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
     }
 
+    func testWindowThatGetsTheFocusLooksActiveBeforeItIsRevealed() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        XCTAssertTrue(driver.read { $0.lookedActive.isEmpty })
+
+        let focus = RevealedFocus(windowId: 20, pid: 200, look: .events)
+        _ = native(await worker.apply(windows(20), request: 2, focus: focus))
+        XCTAssertEqual(driver.read { $0.lookedActive }, ["window 20 of pid 200, before reveal 1"], "The app is told before its window is on screen")
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        XCTAssertTrue(focus.looksActive)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testOnlyAWindowThatIsBeingRevealedGetsItsActiveLook() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        // Nothing is revealed: the window that gets the focus is on screen already
+        let visible = RevealedFocus(windowId: 10, pid: 100, look: .events)
+        _ = native(await worker.apply(windows(), request: 1, focus: visible))
+        _ = native(await worker.apply(windows(), request: 2, focus: visible))
+        XCTAssertFalse(visible.looksActive)
+
+        // The window ID belongs to another app by now
+        let reused = RevealedFocus(windowId: 20, pid: 999, look: .events)
+        _ = native(await worker.apply(windows(20), request: 3, focus: reused))
+        XCTAssertFalse(reused.looksActive)
+        XCTAssertTrue(driver.read { $0.lookedActive.isEmpty })
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        _ = await worker.stop(retry: false)
+    }
+
+    func testAppThatCouldNotBeToldDoesNotCountAsLookingActive() async {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.failLookActive = true }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let focus = RevealedFocus(windowId: 20, pid: 200, look: .events)
+        let plan = native(await worker.apply(windows(20), request: 2, focus: focus))
+        XCTAssertFalse(focus.looksActive)
+        XCTAssertTrue(plan[20]?.1.isReady == true, "The window is revealed and focused as usual")
+        _ = await worker.stop(retry: false)
+    }
+
+    func testMainWindowRequestIsSentBeforeTheRevealAndAwaited() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let revealsBefore = OSAllocatedUnfairLock(initialState: [Int]())
+        let request = RunLoopJob(.cancellable)
+        let focus = RevealedFocus(windowId: 20, pid: 200, look: .mainWindow {
+            revealsBefore.withLock { $0.append(driver.read { $0.reveals.count }) }
+            // The app answers while the worker waits
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(5)) { request.complete() }
+            return request
+        })
+        driver.mutate { $0.afterReveal = { XCTAssertTrue(request.isComplete, "The reveal waits for the answer of the app") } }
+        _ = native(await worker.apply(windows(20), request: 2, focus: focus))
+        XCTAssertEqual(revealsBefore.withLock { $0 }, [0])
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        XCTAssertFalse(focus.looksActive, "Only events make an app look active without being frontmost")
+        XCTAssertTrue(driver.read { $0.lookedActive.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testBusyAppCannotHoldTheRevealBack() async {
+        let driver = HiddenParkingTestDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, mainWindowTimeout: .milliseconds(20), didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let unanswered = RunLoopJob(.cancellable)
+        let started = ContinuousClock.now
+        let plan = native(await worker.apply(windows(20), request: 2, focus: RevealedFocus(windowId: 20, pid: 200, look: .mainWindow { unanswered })))
+        XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+        XCTAssertFalse(unanswered.isComplete)
+        XCTAssertEqual(driver.read { $0.reveals }, [[20]])
+        XCTAssertTrue(plan[20]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
     func testOutgoingWindowsWaitForIncomingOnScreenObservation() async {
         let driver = HiddenParkingTestDriver()
         driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
@@ -772,6 +851,8 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var afterOnScreen: (@Sendable (Int) -> Void)?
         var afterHide: (@Sendable () -> Void)?
         var afterReveal: (@Sendable () -> Void)?
+        var lookedActive: [String] = []
+        var failLookActive = false
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -847,6 +928,13 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         }
         callback?()
         return succeeded
+    }
+
+    func lookActive(_ id: UInt32, pid: Int32) -> Bool {
+        state.withLock { state in
+            state.lookedActive.append("window \(id) of pid \(pid), before reveal \(state.reveals.count + 1)")
+            return !state.failLookActive
+        }
     }
 
     func restore(_ group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {

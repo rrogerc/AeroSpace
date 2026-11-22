@@ -62,6 +62,7 @@ func isNativeFocusOffScreen(frontmostPid: Int32?, windows: [WindowServerWindowIn
         lastKnownNativeFocusedWindowId = nativeFocused?.windowId
     }
     lastSyncedFrontmostPid = frontmostPid
+    ActiveLookingApp.shared.frontmostAppIs(lastSyncedFrontmostPid)
     (nativeFocused?.app as? MacApp)?.lastNativeFocusedWindowId = nativeFocused?.windowId
 }
 
@@ -79,7 +80,7 @@ func isNativeFocusOffScreen(frontmostPid: Int32?, windows: [WindowServerWindowIn
 @MainActor var frontmostPidForTests: pid_t? = nil
 @MainActor var terminatedPidsForTests: Set<pid_t> = []
 
-@MainActor private var frontmostPid: pid_t? {
+@MainActor var frontmostPid: pid_t? {
     isUnitTest ? frontmostPidForTests : NSWorkspace.shared.frontmostApplication?.processIdentifier
 }
 
