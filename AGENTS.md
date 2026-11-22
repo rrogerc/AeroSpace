@@ -141,6 +141,40 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Tests: `WindowFrameUpdateTest`, `EnhancedUserInterfaceTest`,
   `WorkspaceSwitchPerformanceTest.testCommandCanReuseConfirmedNativeFocus`.
 
+- **Workspace switches don't blink the window shadow**: macOS draws the window that has the keyboard with a darker
+  shadow than the other windows, and it's the app of a window that tells WindowServer which of the two to draw. A
+  switch can focus a window only after it's on screen, and an app takes a few frames to react (Zen and Ghostty: four
+  or five after another app, one or two between two Ghostty windows). So the window of the next workspace arrived
+  with the light shadow, and with gaps the shadow around it blinked on every switch: dark, light, dark. Now the
+  window that a switch is about to focus gets its active look while it's still hidden, right before
+  `HiddenWindowParkingWorker` reveals it (`ActiveLook` in `Sources/AppBundle/ActiveLook.swift`, `showAsActive` in
+  `Sources/AppBundle/HiddenWindowParking.swift`). How depends on its app:
+  - Another app is frontmost: the app of the window is sent the events that macOS sends on activation (an
+    AppKit-defined "application activated" event, then the key-window events of `AeroSpaceMakeKeyWindow`), without
+    being activated (`AeroSpaceSetAppLooksActive` in `Sources/PrivateApi/include/private.m`). It draws the window as
+    its key window. The app that is really frontmost isn't told anything, and keeps the keyboard until the switch
+    focuses the window as before. If macOS doesn't activate the app after all (a newer command took the focus
+    elsewhere), it's told that it's inactive again: on the next focus of another app, or after a second
+    (`ActiveLookingApp`).
+  - Its app is frontmost already (two Ghostty windows): the window becomes the main window of the app through AX
+    before the reveal, which waits for the answer for at most 50 ms. AppKit goes on drawing the window that is on
+    screen as active until the new one shows up. The app isn't asked if the window is its main window already (its
+    only window, or the one that had the keyboard last), so a game isn't asked about a window that's off screen.
+
+  Only with `enable-native-window-hiding`. Also touches `Sources/AppBundle/NativeWorkspaceVisibility.swift`
+  (`revealedFocus`), `Sources/AppBundle/layout/refresh.swift` (`runLightSession`),
+  `Sources/AppBundle/tree/MacApp.swift` (`activeLook`), and `Sources/AppBundle/focusCache.swift`.
+  Measured on the gaps around the window, with ScreenCaptureKit at 60 Hz: before, 12 of 14 switches between Ghostty,
+  Zen and Spotify had light frames (four or five into Zen or Ghostty from another app). After, none of 39. The
+  price: the window of the same app shows up 3 to 5 ms later (Ghostty's answer), any other one under 1 ms later.
+  What's left is the frame in which both windows are on screen, because the next window is revealed before the
+  previous one is hidden: their shadows add up for one frame in about half of the switches (18 of 39), as they did
+  before (7 of 14).
+  Getting rid of it takes both changes in one WindowServer transaction, which is only there for whole groups: see
+  "Shadow blink on workspace switches" in `dev-docs/native-window-hiding.md`.
+  Tests: `ActiveLookTest`, and `HiddenWindowParkingTest.testWindowThatGetsTheFocusLooksActiveBeforeItIsRevealed` with
+  the four tests after it.
+
 ## Rebuild, install, and restart — one command
 
 ```bash

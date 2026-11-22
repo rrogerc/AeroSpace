@@ -391,3 +391,105 @@ include public AX/AppKit focus in that transaction. Apple's documented
 applies to windows owned by the calling process; it is not a verified way to
 present a switch between other apps atomically. No further backend change was
 installed after the rollback.
+
+## Shadow blink on workspace switches (2026-11-22)
+
+With gaps, the shadow around the window blinked on every workspace switch. It doesn't anymore: the window that a
+switch is about to focus gets its active look while it's still hidden. Checked on macOS 26.5.1 (25F80), one Studio
+Display at 60 Hz, SIP enabled.
+
+### What the blink was
+
+macOS draws the window that has the keyboard with a darker shadow than the other windows, and it's the app of a
+window that tells WindowServer which of the two to draw, when it gets or loses the keyboard. A switch reveals the
+next window, hides the previous one, and only then focuses the next one. The app takes a few frames to react, so
+until then its window is on screen alone with the light shadow.
+
+Brightness of a 10-point strip left of a test window, on a gray backdrop (199), 0 to 255:
+
+| On screen | Left strip |
+| --- | ---: |
+| One active window | 165.2 |
+| One inactive window | 179.9 |
+| Active and inactive, same frame | 150.9 |
+| Two active windows, same frame | 138.6 |
+| Two inactive windows, same frame | 164.3 |
+
+So the order of a switch gave: 165 (settled), 151 for one frame if the reveal and the hide didn't land in the same
+frame, 180 until the app reacted, 165. The same on the real windows, 14 switches through the CLI on build `81d127f5`:
+
+| Switch | Light frames | Dark frame |
+| --- | --- | --- |
+| Ghostty to Ghostty (4) | 1, 1, 1, 2 | in 3 of 4 |
+| Ghostty to Zen, Zen to Ghostty, Spotify to Zen (8) | 4 or 5 each | in 2 of 8 |
+| Zen to Spotify (2) | Spotify stayed at its inactive level for 4 frames | in 2 of 2 |
+
+The light frames are what the rejected trial above tried to remove by focusing before the hide. That kept both
+windows on screen for longer, and their shadows add up: a dark pulse instead of a light one.
+
+### What doesn't work
+
+- **Holding screen updates back** (`SLSDisableUpdate`, the function behind `NSDisableScreenUpdates`): it only holds
+  the updates of the windows of the calling process. A window that moved every 100 ms went on moving while another
+  process held updates for 400 ms, and stopped for 417 ms when its own process did.
+- **Setting the shadow from outside**: `SLSWindowSetActiveShadowLegacy`, `SLSSetWindowHasKeyAppearance`,
+  `SLSSetWindowHasMainAppearance` and their transaction variants do nothing for a window of another process.
+- **Reading the shadow**: `SLSGetWindowShadowAndRimParameters` answers for any window, but its density (0.4 or 0.7)
+  doesn't follow the keyboard for an AppKit app like Ghostty.
+- **Key-window events alone**: the events of `AeroSpaceMakeKeyWindow` make a visible window of an inactive app key
+  (with the active look, and without making the app frontmost), but a hidden window ignores them. So do AX main,
+  focused and raise.
+- **Swapping two groups in one transaction**: `SLSTransactionShowSpace` and `SLSTransactionHideSpace` in one commit
+  swap two windows in the same frame, 6 times of 6. But the revealed window is then in a group, not on the normal
+  desktop, which pointer tracking needs. Adding the normal desktop to it afterwards dropped the window for a frame:
+  once in 6 with 250 ms between the steps, and in 11 of 20 switches when it and the focus followed the swap right
+  away.
+
+### What works
+
+- An app that believes it's active makes even a hidden window key on those events. And it believes it after the
+  event that AppKit gets on activation: an AppKit-defined event with the subtype "application activated", posted to
+  the process like the key-window events. The app that is really frontmost isn't told anything: a Shift tap still
+  reached it, and not the app that only looked active. The opposite event ends the look.
+- A window of the app that is frontmost already (two windows of one app) becomes its key window through AX main,
+  hidden or not. AppKit goes on drawing the window that's on screen as active until the new one shows up, so nothing
+  changes on screen before the reveal.
+
+Either way the window arrives with the dark shadow. On the test windows, 20 switches each: light frames in 20 of 20
+with the old order, in 0 of 20 with the active look first. On the real windows, build `611d079e` (the change on top
+of `72126088`, built from a copy of the repository), 39 switches in three runs: no light frame. One switch was
+counted as light: the first one to Spotify after the reinstall, which still had its frame from before. (Counted on
+the left, right and bottom gaps. The top gap is where the hidden menu bar slides in, which disturbed one run.)
+
+What it costs, from AeroSpace's signposts (`showAsActive`): the events take under a millisecond. The AX request
+takes 3 to 5 ms with Ghostty (9 ms for the first one after five idle minutes), and the reveal waits for it, so the
+window of a same-app switch shows up that much later.
+
+Checked on the installed build with a throwaway regular app that logs what AppKit tells it:
+
+- From another app: `app-active`, `key`, `main`, and only then `occlusion-visible`. Then a Shift tap and a pointer
+  sweep reached the window (tracking areas of all three kinds: always, key window, active app).
+- Between its two windows: `B:key`, `B:main`, and only then `A:occlusion-hidden` and `B:occlusion-visible`. The AX
+  request for a parked window didn't switch desktops or move anything: afterwards there was still one desktop, the
+  windows of the visible workspace were on it, and all the others in the hidden group.
+- Two switches sent at the same moment, to its workspace and straight back, 6 times: the app was told that it's
+  active, never got the real activation, and was told that it's inactive each time.
+
+The first event to a process took 40 ms in some runs, and under a millisecond after that. Then that one switch
+blinks as before.
+
+### What's left
+
+The next window is revealed before the previous one is hidden, and the hide waits until WindowServer lists the
+revealed window as on screen. If a frame is composed in between, both windows are in it, and their shadows add up
+for that frame: in 7 of 14 switches before, in 18 of 39 after (two frames in 3 of them). It's darker than it used to
+be when the windows are of different apps, because the next window is active already.
+
+Polling faster doesn't change it much: 7 of 40 switches on the test windows with the 4 ms poll of
+`waitForOnScreenReveals`, 5 of 40 with 0.5 ms. Hiding first would show the wallpaper instead. Only a swap in one
+transaction removes the frame, and that's the group swap above with its own problem.
+
+Probe sources, recordings and the install backup are in the ignored directory `.local/shadow-blink/`:
+`rig.py` with `RigDriver.m` and `TestApp.m` (test windows), `real.py` (real workspaces), `e2e.py` and `supersede.py`
+(the checks on the installed build), `signposts.py` (AeroSpace's signposts next to the recorder's clock),
+`baseline-1`, `after-1`, `after-2` and `after-3` (the recordings behind the numbers).
