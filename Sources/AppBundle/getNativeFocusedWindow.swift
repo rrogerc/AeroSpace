@@ -26,27 +26,25 @@ func getNativeFocusedWindow(_ cm: CancellationMode) async throws -> Window? {
 }
 
 /// A command doesn't wait for the frontmost app if WindowServer already shows what the app would answer.
-/// Refreshes ask the app anyway
+/// Refreshes ask the app anyway.
+///
+/// The app's answer takes two AX requests (the focused window, then its ID), and a game answers a request only every
+/// frame or two (Slay the Spire 2: 27 ms a request, and 67 ms for one in ten). WindowServer answers in about 1.5 ms,
+/// which is as fast as the quickest apps, so it's asked first before every command, not only before a workspace switch
 @MainActor
-func getNativeFocusedWindowBeforeCommand(_ cm: CancellationMode, preferCached: Bool) async throws -> Window? {
+func getNativeFocusedWindowBeforeCommand(_ cm: CancellationMode) async throws -> Window? {
     guard NativeWorkspaceVisibility.shared.shouldFollowNativeFocus(nil) else { return nil }
-    if !isUnitTest {
+    if !isUnitTest, let windows = getOnScreenWindowServerWindows() {
         let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let focused = focus.windowOrNil
-        // WindowServer queries aren't free, and an app that shows the focused window isn't off screen
-        if preferCached || focused?.app.pid != frontmostPid, let windows = getOnScreenWindowServerWindows() {
-            if preferCached,
-               let cached = cachedNativeFocusedWindow(
-                   frontmostPid: frontmostPid,
-                   windows: windows,
-                   nativeVisibility: focused.flatMap { NativeVisibilityGates.shared.get($0.windowId, pid: $0.app.pid) },
-                   appWindowCount: (focused?.app as? MacApp)?.windowsCount,
-               )
-            {
-                return cached
-            }
-            if isNativeFocusOffScreen(frontmostPid: frontmostPid, windows: windows) { return lastKnownNativeFocusedWindow }
-        }
+        let cached = cachedNativeFocusedWindow(
+            frontmostPid: frontmostPid,
+            windows: windows,
+            nativeVisibility: focused.flatMap { NativeVisibilityGates.shared.get($0.windowId, pid: $0.app.pid) },
+            appWindowCount: (focused?.app as? MacApp)?.windowsCount,
+        )
+        if let cached { return cached }
+        if isNativeFocusOffScreen(frontmostPid: frontmostPid, windows: windows) { return lastKnownNativeFocusedWindow }
     }
     return try await focusedApp?.getFocusedWindow(cm)
 }

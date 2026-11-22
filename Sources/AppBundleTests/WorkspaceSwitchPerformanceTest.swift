@@ -31,13 +31,13 @@ final class WorkspaceSwitchPerformanceTest: XCTestCase {
         XCTAssertNil(WindowServerWindowInfo(missingOwner))
     }
 
-    func testWorkspaceSwitchCanReuseConfirmedNativeFocus() throws {
+    func testCommandCanReuseConfirmedNativeFocus() throws {
         let window = focusedWindow()
         let windows = try [XCTUnwrap(WindowServerWindowInfo(record()))]
         XCTAssertTrue(cachedNativeFocusedWindow(frontmostPid: 0, windows: windows) === window)
     }
 
-    func testWorkspaceSwitchFallsBackWhenAnotherAppOrWindowIsFrontmost() throws {
+    func testCommandAsksTheAppWhenAnotherAppOrWindowIsFrontmost() throws {
         _ = focusedWindow()
         let windows = try [XCTUnwrap(WindowServerWindowInfo(record()))]
         XCTAssertNil(cachedNativeFocusedWindow(frontmostPid: 99, windows: windows))
@@ -47,7 +47,7 @@ final class WorkspaceSwitchPerformanceTest: XCTestCase {
         XCTAssertNil(cachedNativeFocusedWindow(frontmostPid: 0, windows: []))
     }
 
-    func testWorkspaceSwitchFallsBackForPopupOrUnconfirmedFocus() throws {
+    func testCommandAsksTheAppAboutPopupOrUnconfirmedFocus() throws {
         let window = focusedWindow()
         let popup = try XCTUnwrap(WindowServerWindowInfo(record(windowId: 2, layer: 3)))
         let nativeWindow = try XCTUnwrap(WindowServerWindowInfo(record()))
@@ -185,7 +185,7 @@ final class WorkspaceSwitchPerformanceTest: XCTestCase {
         XCTAssertEqual(update.skippingUnchangedValues(comparedTo: clamped), update)
     }
 
-    func testOnlyWorkspaceCommandsAllowCachedNativeFocus() {
+    func testOnlyWorkspaceCommandsAreWorkspaceSwitches() {
         for command in ["workspace 1", "workspace next", "workspace-back-and-forth"] {
             XCTAssertTrue(parseCommand(command).cmdOrDie.flatten().allSatisfy(\.isWorkspaceSwitch))
         }

@@ -37,7 +37,7 @@ extension HotKey {
         try await runLightSession(
             .hotkeyBinding,
             .checkServerIsEnabledOrDie(),
-            preferCachedFocus: isWorkspaceSwitch,
+            isWorkspaceSwitch: isWorkspaceSwitch,
             synchronizeNativeFocus: !(isWorkspaceSwitch && followsWorkspaceSwitch),
             forceNativeFocus: isWorkspaceSwitch && followsWorkspaceSwitch,
             deferLayout: {
