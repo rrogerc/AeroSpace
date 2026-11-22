@@ -206,6 +206,22 @@ struct WindowFrameUpdate: Equatable, Sendable {
             CGSize(width: (topLeft.x + $0.width).roundedHalfUp - origin.x, height: (topLeft.y + $0.height).roundedHalfUp - origin.y)
         })
     }
+
+    /// AppKit doesn't let an AX resize push a window past the right or the bottom edge of its screen: it clamps the
+    /// size. So the size of a window that grows to the left or up (e.g. the right one of two tiles goes fullscreen)
+    /// isn't accepted until the window has moved. With the size first, the window grows as far as the screen edge,
+    /// moves, and only then gets its size: three steps on screen for an app that takes a frame or two for each
+    /// request, and a game allocates its buffers twice. Such a window moves first.
+    /// `screens` and `bounds` have the top left origin of AX
+    func movesFirst(from bounds: CGRect, screens: [CGRect]) -> Bool {
+        guard let topLeft, let size else { return false }
+        let resizedInPlace = CGRect(origin: bounds.origin, size: size)
+        if screens.contains(where: { $0.contains(resizedInPlace) }) { return false }
+        // The window keeps its size until it has moved. It must not reach into another screen meanwhile: macOS
+        // resizes windows that span screens by its own rules (https://github.com/nikitabobko/AeroSpace/issues/143)
+        let onTheWay = CGRect(origin: topLeft, size: bounds.size).union(CGRect(origin: topLeft, size: size))
+        return screens.contains { $0.contains(onTheWay) }
+    }
 }
 
 extension CGFloat {

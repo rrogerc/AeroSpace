@@ -206,6 +206,7 @@ final class MacApp: AbstractApp {
         guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return }
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
         let frame = WindowFrameUpdate(topLeft: topLeft, size: size).onWholePoints
+        let screens = monitorInfos.map { CGRect(x: $0.rect.topLeftX, y: $0.rect.topLeftY, width: $0.rect.width, height: $0.rect.height) }
         setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }
             if afterReveals {
@@ -216,13 +217,14 @@ final class MacApp: AbstractApp {
             // that an app accepted them, and a mouse drag may have changed the actual frame.
             // Keep position-only moves on the existing AX path: an extra WindowServer read
             // can wait behind app activation and delay hiding the outgoing window.
-            let update = frame
-                .skippingUnchangedValues(comparedTo: frame.size == nil ? nil : getWindowServerWindow(windowId, pid: pid)?.bounds)
+            let bounds = frame.size == nil ? nil : getWindowServerWindow(windowId, pid: pid)?.bounds
+            let update = frame.skippingUnchangedValues(comparedTo: bounds)
             if update.isEmpty { return }
             try job.checkCancellation()
             enhancedUserInterface.threadGuarded.acquireForBatch()
             try job.checkCancellation()
-            try setFrame(window, update.topLeft, update.size, job)
+            let moveFirst = bounds.map { update.movesFirst(from: $0, screens: screens) } ?? false
+            try setFrame(window, update.topLeft, update.size, moveFirst: moveFirst, job)
         }
     }
 
@@ -509,7 +511,13 @@ private func getAxRect(window: AXUIElement, job: RunLoopJob) throws -> Rect? {
     return Rect(topLeftX: topLeftCorner.x, topLeftY: topLeftCorner.y, width: size.width, height: size.height)
 }
 
-private func setFrame(_ window: AXUIElement, _ topLeft: CGPoint?, _ size: CGSize?, _ job: RunLoopJob) throws {
+private func setFrame(_ window: AXUIElement, _ topLeft: CGPoint?, _ size: CGSize?, moveFirst: Bool = false, _ job: RunLoopJob) throws {
+    if moveFirst, let topLeft, let size { // See WindowFrameUpdate.movesFirst
+        window.set(Ax.topLeftCornerAttr, topLeft)
+        try job.checkCancellation()
+        window.set(Ax.sizeAttr, size)
+        return
+    }
     // Set size and then the position. The order is important https://github.com/nikitabobko/AeroSpace/issues/143
     //                                                        https://github.com/nikitabobko/AeroSpace/issues/335
     if let size { window.set(Ax.sizeAttr, size) }
