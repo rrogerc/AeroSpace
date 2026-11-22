@@ -84,6 +84,25 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   The earlier environment-variable
   native-Space/group experiments remain available separately; this config option takes precedence over them.
   Investigation and live-test evidence: `dev-docs/native-window-hiding.md`.
+- **Commands don't wait for a frontmost app that shows no window**: before a command runs, AeroSpace asks the frontmost
+  app for its focused window. After a switch to an empty workspace that's still the app of the previous workspace, with
+  its window hidden. A game there (Slay the Spire 2, Godot) answers AX only between frames, and with its window off
+  screen a frame blocks in `-[CAMetalLayer nextDrawable]` until its 1 s timeout, or until the window is shown again.
+  So the switch back waited for the answer of the window that it was about to show: 600 to 680 ms, now about 10 ms,
+  and the game answers 6 to 36 ms after its window is back. When the frontmost app is the one that native focus was
+  synced with last and WindowServer shows no window of it, a command takes the window of that sync instead of asking
+  (`isNativeFocusOffScreen` in `Sources/AppBundle/focusCache.swift`, `getNativeFocusedWindowBeforeCommand` in
+  `Sources/AppBundle/getNativeFocusedWindow.swift`, called from `runLightSession`). Refreshes still ask the app. A
+  window hidden in a corner still counts as on screen for WindowServer, so its app is asked as before.
+  Tests: `WorkspaceSwitchPerformanceTest.testCommandDoesNotAskFrontmostAppThatShowsNoWindow`,
+  `testCommandAsksFrontmostAppThatShowsWindowOrWasNotSynced`.
+- **Scoped refreshes ask LaunchServices only about their own apps**: `NSRunningApplication` makes a synchronous round
+  trip to LaunchServices for every property, even for the pid. A refresh read `activationPolicy` of every running app
+  on the main thread (about 30 ms for 160 apps), where the workspace hotkey tap runs too. A refresh scoped to some
+  apps now looks up only those (`refreshAllAndGetAliveWindowIds` in `Sources/AppBundle/tree/MacApp.swift`). Checking
+  the scope before the policy isn't enough: the pid costs the same round trip. Refreshes of all apps (after a mouse
+  click, or a command that isn't a workspace switch) still go through every running app. No unit test, it's
+  LaunchServices behavior: checked with `sample` on the installed app.
 
 ## Rebuild, install, and restart — one command
 
