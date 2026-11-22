@@ -103,6 +103,43 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   the scope before the policy isn't enough: the pid costs the same round trip. Refreshes of all apps (after a mouse
   click, or a command that isn't a workspace switch) still go through every running app. No unit test, it's
   LaunchServices behavior: checked with `sample` on the installed app.
+- **Frame changes (e.g. `fullscreen`) don't wait for a slow app**: a game answers an AX request only every frame or
+  two. Godot (Slay the Spire 2) runs a frame from a run loop observer and then wakes the run loop, so every pass of the
+  loop takes one request at most: 27 ms a request while the game is played (the median of 4900 requests), and 67 ms
+  for one in ten. `fullscreen` on the game sent six requests one after the other: the focused window and its ID,
+  `AXEnhancedUserInterface`, then size, position, size. Four changes, all in the path of every command and every
+  layout:
+  - Before a command, the focused window comes from WindowServer whenever it shows the window that AeroSpace has
+    focused as the front window of the frontmost app (`cachedNativeFocusedWindow`). That was only so for workspace
+    switches. WindowServer answers in about 1.5 ms, as fast as the quickest apps
+    (`getNativeFocusedWindowBeforeCommand` in `Sources/AppBundle/getNativeFocusedWindow.swift`). The parameter of
+    `runLightSession` that used to turn it on only scopes the refresh now, and is called `isWorkspaceSwitch`.
+  - `AXEnhancedUserInterface` is read after the frames of a batch if the app's last answer was false, not before them
+    (`Sources/AppBundle/EnhancedUserInterface.swift`). If another client has enabled it meanwhile, that one batch may
+    animate, and the layout of the next refresh writes the frames again with the attribute disabled.
+  - Frames are written on whole points (`WindowFrameUpdate.onWholePoints` in `Sources/AppBundle/windowServer.swift`,
+    applied in `MacApp.setAxFrame`). On a monitor 2048 points wide, two tiles are 1004.5 points wide each. AppKit
+    rounds such a frame its own way (even the same width up or down, depending on the frame before it), so the window
+    never matched the requested frame, and every layout (after every command, and every mouse click) wrote it again:
+    four requests for a window that was already in place. Edges are rounded, not sizes, so the gaps stay even.
+  - A window that can't have its size where it is moves first (`WindowFrameUpdate.movesFirst`). AppKit clamps an AX
+    resize at the right and bottom edges of the screen, so the right one of two tiles only grew as far as the screen
+    edge (1018 points wide instead of 2022), moved, and then got its size: three steps on screen and two resizes.
+    Now it's position, then size. Only if the window stays within one monitor on the way: a window that spans
+    monitors is the case of upstream's issue 143, and gets size, position, size as before.
+
+  Measured on the game in the right one of two tiles, with six toggles of `fullscreen` before and after (medians):
+  the first write is sent 14 ms after the command instead of 100 ms, and WindowServer shows the final frame after
+  62 ms instead of 176 ms. Not counting what the refreshes ask, the six toggles took 21 requests to the game instead
+  of 48.
+  The sequence can't get shorter than that. On a test window (an accessory app, which AeroSpace doesn't manage, with
+  a Godot-like run loop): `AXFrame` isn't settable, WindowServer shows a frame only after the app has answered (so a
+  write can't be checked and the next one skipped), and two requests sent at once are still answered a frame or two
+  apart. So a window that changes both position and size (the right or the bottom tile) still changes in two steps,
+  and the left or the top tile in one. A window that refuses its frame for its own reasons (Steam is at least 1010
+  points wide) is still written by every layout.
+  Tests: `WindowFrameUpdateTest`, `EnhancedUserInterfaceTest`,
+  `WorkspaceSwitchPerformanceTest.testCommandCanReuseConfirmedNativeFocus`.
 
 ## Rebuild, install, and restart — one command
 
