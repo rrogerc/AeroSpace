@@ -142,7 +142,7 @@ func runLightSession<T>(
     return try await $refreshSessionEvent.withValue(event) {
         if synchronizeNativeFocus {
             let focusToken = NativeFocusRefreshToken()
-            let nativeFocused = try await getNativeFocusedWindow(.cancellable, preferCached: preferCachedFocus)
+            let nativeFocused = try await getNativeFocusedWindowBeforeCommand(.cancellable, preferCached: preferCachedFocus)
             if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
             try checkCancellation()
             if focusToken.isCurrent { updateFocusCache(nativeFocused) }

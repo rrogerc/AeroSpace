@@ -28,6 +28,20 @@ func cachedNativeFocusedWindow(
     return window
 }
 
+/// The window that macOS focused the last time native focus was synced
+@MainActor var lastKnownNativeFocusedWindow: Window? { lastKnownNativeFocusedWindowId.flatMap { Window.get(byId: $0) } }
+
+/// The frontmost app is the one that native focus was synced with last, and it shows no window. So macOS focus is
+/// still where that sync left it: in a window of a hidden workspace, or nowhere. There's nothing to learn from asking
+/// the app, and it may take long to answer. A game answers AX between frames, and with its window off screen a frame
+/// waits a second for a drawable. A switch to the workspace of that window would wait for the answer before it shows
+/// the window, which is what lets the game answer
+@MainActor
+func isNativeFocusOffScreen(frontmostPid: Int32?, windows: [WindowServerWindowInfo]) -> Bool {
+    guard let frontmostPid, frontmostPid == lastSyncedFrontmostPid else { return false }
+    return !windows.contains { $0.pid == frontmostPid }
+}
+
 /// The data should flow (from nativeFocused to focused) and
 ///                      (from nativeFocused to lastKnownNativeFocusedWindowId)
 /// Alternative names: takeFocusFromMacOs, syncFocusFromMacOs

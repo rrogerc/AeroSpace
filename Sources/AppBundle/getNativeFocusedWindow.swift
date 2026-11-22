@@ -20,18 +20,33 @@ private var focusedApp: (any AbstractApp)? {
 }
 
 @MainActor
-func getNativeFocusedWindow(_ cm: CancellationMode, preferCached: Bool = false) async throws -> Window? {
+func getNativeFocusedWindow(_ cm: CancellationMode) async throws -> Window? {
     guard NativeWorkspaceVisibility.shared.shouldFollowNativeFocus(nil) else { return nil }
-    if preferCached && !isUnitTest,
-       let windows = getOnScreenWindowServerWindows(),
-       let cached = cachedNativeFocusedWindow(
-           frontmostPid: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-           windows: windows,
-           nativeVisibility: focus.windowOrNil.flatMap { NativeVisibilityGates.shared.get($0.windowId, pid: $0.app.pid) },
-           appWindowCount: (focus.windowOrNil?.app as? MacApp)?.windowsCount,
-       )
-    {
-        return cached
+    return try await focusedApp?.getFocusedWindow(cm)
+}
+
+/// A command doesn't wait for the frontmost app if WindowServer already shows what the app would answer.
+/// Refreshes ask the app anyway
+@MainActor
+func getNativeFocusedWindowBeforeCommand(_ cm: CancellationMode, preferCached: Bool) async throws -> Window? {
+    guard NativeWorkspaceVisibility.shared.shouldFollowNativeFocus(nil) else { return nil }
+    if !isUnitTest {
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let focused = focus.windowOrNil
+        // WindowServer queries aren't free, and an app that shows the focused window isn't off screen
+        if preferCached || focused?.app.pid != frontmostPid, let windows = getOnScreenWindowServerWindows() {
+            if preferCached,
+               let cached = cachedNativeFocusedWindow(
+                   frontmostPid: frontmostPid,
+                   windows: windows,
+                   nativeVisibility: focused.flatMap { NativeVisibilityGates.shared.get($0.windowId, pid: $0.app.pid) },
+                   appWindowCount: (focused?.app as? MacApp)?.windowsCount,
+               )
+            {
+                return cached
+            }
+            if isNativeFocusOffScreen(frontmostPid: frontmostPid, windows: windows) { return lastKnownNativeFocusedWindow }
+        }
     }
     return try await focusedApp?.getFocusedWindow(cm)
 }

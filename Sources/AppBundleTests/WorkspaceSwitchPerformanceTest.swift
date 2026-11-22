@@ -59,6 +59,36 @@ final class WorkspaceSwitchPerformanceTest: XCTestCase {
         XCTAssertNil(cachedNativeFocusedWindow(frontmostPid: 0, windows: [nativeWindow]))
     }
 
+    /// A game stays frontmost after a switch to an empty workspace, and it takes long to answer AX with its window off
+    /// screen. The switch back to it must not wait for the answer
+    func testCommandDoesNotAskFrontmostAppThatShowsNoWindow() throws {
+        frontmostPidForTests = TestApp.shared.pid
+        let game = focusedWindow()
+        let empty = Workspace.get(byName: "empty")
+        XCTAssertTrue(empty.focusWorkspace())
+        let otherApp = try [XCTUnwrap(WindowServerWindowInfo(record(windowId: 2, pid: 99)))]
+        XCTAssertTrue(isNativeFocusOffScreen(frontmostPid: TestApp.shared.pid, windows: otherApp))
+        XCTAssertTrue(isNativeFocusOffScreen(frontmostPid: TestApp.shared.pid, windows: []))
+
+        XCTAssertTrue(lastKnownNativeFocusedWindow === game)
+        updateFocusCache(lastKnownNativeFocusedWindow)
+        XCTAssertTrue(focus.workspace === empty) // The answer of the last sync doesn't bring the game's workspace back
+        XCTAssertNil(focus.windowOrNil)
+    }
+
+    func testCommandAsksFrontmostAppThatShowsWindowOrWasNotSynced() throws {
+        XCTAssertFalse(isNativeFocusOffScreen(frontmostPid: TestApp.shared.pid, windows: [])) // Not synced yet
+        frontmostPidForTests = TestApp.shared.pid
+        _ = focusedWindow()
+        let window = try XCTUnwrap(WindowServerWindowInfo(record()))
+        let popup = try XCTUnwrap(WindowServerWindowInfo(record(windowId: 2, layer: 3)))
+        XCTAssertFalse(isNativeFocusOffScreen(frontmostPid: TestApp.shared.pid, windows: [window]))
+        XCTAssertFalse(isNativeFocusOffScreen(frontmostPid: TestApp.shared.pid, windows: [popup])) // Maybe a new window
+        // Another app was activated since the sync (e.g. cmd-tab to an app of a hidden workspace)
+        XCTAssertFalse(isNativeFocusOffScreen(frontmostPid: 99, windows: []))
+        XCTAssertFalse(isNativeFocusOffScreen(frontmostPid: nil, windows: []))
+    }
+
     func testOldFocusReplyStaysStaleAfterSwitchingAwayAndBack() {
         let original = focus.workspace
         let token = NativeFocusRefreshToken()
@@ -171,10 +201,10 @@ final class WorkspaceSwitchPerformanceTest: XCTestCase {
         return window
     }
 
-    private func record(windowId: UInt32 = 1, layer: Int = 0, bounds: CGRect = CGRect(x: 13, y: 13, width: 800, height: 600)) -> [String: Any] {
+    private func record(windowId: UInt32 = 1, pid: Int32 = 0, layer: Int = 0, bounds: CGRect = CGRect(x: 13, y: 13, width: 800, height: 600)) -> [String: Any] {
         [
             kCGWindowNumber as String: windowId,
-            kCGWindowOwnerPID as String: Int32(0),
+            kCGWindowOwnerPID as String: pid,
             kCGWindowLayer as String: layer,
             kCGWindowBounds as String: bounds.dictionaryRepresentation,
         ]
