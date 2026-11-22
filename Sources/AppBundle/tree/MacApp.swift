@@ -205,6 +205,7 @@ final class MacApp: AbstractApp {
         setFrameJobs.removeValue(forKey: windowId)?.cancel()
         guard NativeWorkspaceVisibility.shared.shouldRegisterNativeWindow(windowId) else { return }
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
+        let frame = WindowFrameUpdate(topLeft: topLeft, size: size).onWholePoints
         setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }
             if afterReveals {
@@ -215,8 +216,8 @@ final class MacApp: AbstractApp {
             // that an app accepted them, and a mouse drag may have changed the actual frame.
             // Keep position-only moves on the existing AX path: an extra WindowServer read
             // can wait behind app activation and delay hiding the outgoing window.
-            let update = WindowFrameUpdate(topLeft: topLeft, size: size)
-                .skippingUnchangedValues(comparedTo: size == nil ? nil : getWindowServerWindow(windowId, pid: pid)?.bounds)
+            let update = frame
+                .skippingUnchangedValues(comparedTo: frame.size == nil ? nil : getWindowServerWindow(windowId, pid: pid)?.bounds)
             if update.isEmpty { return }
             try job.checkCancellation()
             enhancedUserInterface.threadGuarded.acquireForBatch()

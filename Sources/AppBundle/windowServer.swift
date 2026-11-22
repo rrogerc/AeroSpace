@@ -191,4 +191,24 @@ struct WindowFrameUpdate: Equatable, Sendable {
         let topLeft = size == nil && topLeft == bounds.origin ? nil : topLeft
         return WindowFrameUpdate(topLeft: topLeft, size: size)
     }
+
+    /// Apps keep their windows on whole points. Two tiles side by side on a monitor 2048 points wide are 1004.5 points
+    /// wide each, and AppKit rounds such a frame its own way (the same width up or down, depending on the frame
+    /// before it). The window then never has the requested frame, and every layout writes it again: four AX requests
+    /// for a window that is already in place.
+    /// Edges are rounded, not sizes, so the gap between two neighbors stays the same
+    var onWholePoints: WindowFrameUpdate {
+        guard let topLeft else {
+            return WindowFrameUpdate(topLeft: nil, size: size.map { CGSize(width: $0.width.roundedHalfUp, height: $0.height.roundedHalfUp) })
+        }
+        let origin = CGPoint(x: topLeft.x.roundedHalfUp, y: topLeft.y.roundedHalfUp)
+        return WindowFrameUpdate(topLeft: origin, size: size.map {
+            CGSize(width: (topLeft.x + $0.width).roundedHalfUp - origin.x, height: (topLeft.y + $0.height).roundedHalfUp - origin.y)
+        })
+    }
+}
+
+extension CGFloat {
+    /// Unlike `rounded()`, halves always go the same way. Two edges with a gap between them must not round apart
+    fileprivate var roundedHalfUp: CGFloat { (self + 0.5).rounded(.down) }
 }
