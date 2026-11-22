@@ -354,9 +354,15 @@ final class MacApp: AbstractApp {
                 }
             }
             // Register new apps
-            for nsApp in NSWorkspace.shared.runningApplications {
+            // NSRunningApplication asks LaunchServices for every property, even for the pid, and blocks the main
+            // thread meanwhile. A scoped refresh asks only about its own apps, not about every running app
+            let candidates: [NSRunningApplication] = switch scope {
+                case .all: NSWorkspace.shared.runningApplications
+                case .apps(let pids): pids.compactMap { MacApp.allAppsMap[$0]?.nsApp ?? NSRunningApplication(processIdentifier: $0) }
+            }
+            for nsApp in candidates {
                 try checkCancellation()
-                if nsApp.activationPolicy == .regular && scope.contains(nsApp.processIdentifier) {
+                if nsApp.activationPolicy == .regular {
                     refreshTheApp(nsApp)
                 }
             }
@@ -365,7 +371,7 @@ final class MacApp: AbstractApp {
                 // "About this Mac" window, TouchID, and a lot of other utility windows
                 // We don't monitor them actively as we do for regular apps, but if a window of one of those utility
                 // apps got focused it will end up in allAppsMap
-                if app.nsApp.activationPolicy != .regular && scope.contains(app.pid) {
+                if scope.contains(app.pid) && app.nsApp.activationPolicy != .regular {
                     refreshTheApp(app.nsApp)
                 }
             }
