@@ -26,16 +26,46 @@ final class EnhancedUserInterfaceTest: XCTestCase {
         }
     }
 
-    func testFalseIsNotCachedBecauseAnotherClientCanEnableAttribute() {
+    /// A game answers an AX request only every frame or two. Its frames must not wait for an answer that was false
+    /// the last time
+    func testFramesDontWaitForTheAnswerThatWasFalseLastTime() {
+        var events: [String] = []
+        let ui = EnhancedUserInterface(read: { events.append("read"); return .success(false) }, write: { _ in XCTFail("Nothing to disable"); return .failure })
+        for _ in 0 ..< 3 {
+            ui.acquireForBatch()
+            events.append("frames")
+            ui.release()
+        }
+        XCTAssertEqual(events, ["read", "frames", "frames", "read", "frames", "read"])
+    }
+
+    func testAttributeEnabledByAnotherClientIsNoticedAfterTheBatchAndDisabledInTheNextOne() {
         var enabled = false
-        var writes: [Bool] = []
-        let ui = EnhancedUserInterface(read: { .success(enabled) }, write: { writes.append($0); return .success })
+        var events: [String] = []
+        let ui = EnhancedUserInterface(read: { events.append("read"); return .success(enabled) }, write: { events.append("write \($0)"); return .success })
         ui.acquire()
         ui.release()
         enabled = true
-        ui.acquire()
-        ui.release()
-        XCTAssertEqual(writes, [false, true])
+        events = []
+        for _ in 0 ..< 2 {
+            ui.acquire()
+            events.append("frames")
+            ui.release()
+        }
+        XCTAssertEqual(events, ["frames", "read", "read", "write false", "frames", "write true"])
+    }
+
+    func testFailedAnswerAfterTheBatchIsNotTakenForFalse() {
+        var answers: [AxAttributeResult<Bool>] = [.success(false), .failure(.cannotComplete), .success(false)]
+        var events: [String] = []
+        let ui = EnhancedUserInterface(read: { events.append("read"); return answers.removeFirst() }, write: { _ in XCTFail("Nothing to disable"); return .failure })
+        for _ in 0 ..< 3 {
+            ui.acquire()
+            events.append("frames")
+            ui.release()
+        }
+        // The second batch doesn't wait, the third one does: nobody knows the value after the failure
+        XCTAssertEqual(events, ["read", "frames", "frames", "read", "read", "frames"])
     }
 
     func testFailedDisableDoesNotRestoreOrCacheTransientFailure() {
