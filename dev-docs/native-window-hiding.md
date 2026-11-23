@@ -487,9 +487,155 @@ be when the windows are of different apps, because the next window is active alr
 
 Polling faster doesn't change it much: 7 of 40 switches on the test windows with the 4 ms poll of
 `waitForOnScreenReveals`, 5 of 40 with 0.5 ms. Hiding first would show the wallpaper instead. Only a swap in one
-transaction removes the frame, and that's the group swap above with its own problem.
+transaction removes the frame, and that's the group swap above with its own problem. The next section gets around
+that problem.
 
 Probe sources, recordings and the install backup are in the ignored directory `.local/shadow-blink/`:
 `rig.py` with `RigDriver.m` and `TestApp.m` (test windows), `real.py` (real workspaces), `e2e.py` and `supersede.py`
 (the checks on the installed build), `signposts.py` (AeroSpace's signposts next to the recorder's clock),
 `baseline-1`, `after-1`, `after-2` and `after-3` (the recordings behind the numbers).
+
+## Both workspaces in one frame (2026-11-22)
+
+The frame that the section above left over is gone: the windows of the next workspace show up in the frame in which
+the windows of the previous one disappear. Same machine, same day.
+
+### What the frame was
+
+A switch revealed the next window, waited until WindowServer listed it as on screen, and hid the previous one. Both
+changes are requests to WindowManager, a few milliseconds apart. A frame composed in between had both windows, and
+their shadows add up. On the real windows, right before the change (build `611d079e`): a frame with both shadows in
+12 of 26 switches.
+
+### Why the two steps can't be closer together
+
+- **Only WindowManager moves a window of another app.** `SLSSpaceAddWindowsAndRemoveFromSpaces`,
+  `SLSAddWindowsToSpaces`, `SLSRemoveWindowsFromSpaces` and the transaction calls for the same do nothing from our
+  connection, not even between two groups that it owns, or to take a window out of one of them. The bridged
+  operations that `WorkspaceGroups.m` uses run in WindowManager, each on its own.
+  `SLSSetWindowAlpha`, `SLSTransactionSetWindowAlpha`, `SLSTransactionSetWindowSystemAlpha`, `SLSOrderWindow` and
+  `SLSTransactionOrderWindow` do nothing for a window of another app either (`SLSOrderWindow` returns 1000).
+- **A window joins the desktop in two steps.** The request changes its spaces at once, and WindowServer lists it as
+  on screen 2.5 ms later (0.7 to 4.7 ms in 80 joins, and once more than 20). In between it isn't drawn at all, not
+  even through a shown group that it is in as well. A sample of WindowManager shows why: WindowServer notifies it of
+  the new member (`_spaceManagerDidUpdateNotifyProc`, `-[SLSSpaceWindowManager _performBatchingCallouts:]`), and it
+  answers with a transaction of its own (`SLSTransactionSetWindowSystemAlpha` is among its calls). So the moment at
+  which a revealed window shows up is WindowManager's to pick.
+- **Hiding the previous window in a transaction, the moment the next one is listed** (the previous window waits in a
+  shown group of ours, where it stays visible, and hiding a group is one transaction): a frame with both in 6 of 60
+  switches with a pause of 0.5 ms between the questions, in 1 of 60 without a pause. Better than 7 of 40, never
+  none.
+- **Swapping two groups, and moving the revealed window to the desktop after it**: the swap is exact, but the move
+  runs into the two steps above. The window is gone for a frame in 5 of 12 moves with the operation that
+  `AeroSpaceReturnWindowsFromWorkspaceGroup` uses (selector 15), in 11 of 54 with selector 7 (the window keeps its
+  group), in 3 of 12 with `SLSBridgedMoveWindowsToManagedSpaceOperation`, and in 2 of 4 when it's taken out of its
+  only group (it lands on the desktop then). `SLSBridgedAddWindowsToSpacesOperation` doesn't add the desktop to a
+  window that is in a group at all. Leaving the desktop has no such gap: 76 moves into a shown group, none with a
+  frame without the window.
+- **Leaving the visible windows in a shown group for good** would do without the move, but then they aren't on the
+  desktop, which is what the earlier group backend did (its hover regression in Zen was never explained). On a test
+  window, pointer tracking of all three kinds, `windowNumberAtPoint` and both ways of focusing work in a shown
+  group. It wasn't tried on real apps.
+
+### What works
+
+While a group is shown, its alpha applies to all its windows, also to a window that is on the desktop as well. (Not
+while the group is hidden: then such a window is drawn like any window on the desktop.) And
+`SLSTransactionSetSpaceAlpha` works on the groups of our connection. With alpha 0 nothing of a window is left on
+screen: the strips around it show the backdrop to the last digit, so the shadow is gone too.
+
+That makes a place where a window can join the desktop unseen, and a way to show it in a transaction. Besides the
+hidden group there are two shown groups, both empty between switches: `arriving` with alpha 0 and `leaving` with
+alpha 1 (`WindowSwapGroups`). A switch with windows on both sides:
+
+1. **Stage** (`AeroSpaceStageWindowSwap`). The next windows move from the hidden group to `arriving` (selector 15),
+   and join the desktop from there (selector 7, which leaves them in `arriving`). The previous windows join
+   `leaving` (selector 8, which leaves them on the desktop). On screen nothing changes.
+2. **Wait** until WindowServer lists the next windows as on screen. The flag goes off in the moment the spaces
+   change and comes back when WindowManager has shown the window: in 80 traced joins it was never on in between.
+3. **Swap** (`AeroSpaceCommitWindowSwap`): one transaction gives `arriving` alpha 1 and `leaving` alpha 0.
+4. **Settle** (`AeroSpaceSettleWindowSwap`): the previous windows leave the desktop and `leaving` for the hidden
+   group, the next ones leave `arriving`, and the alphas go back. On screen nothing changes, and every window is
+   where it would be without all this.
+
+Each step alone, with 250 ms between them, on two test windows: the only frame that differs from the one before it
+is the frame of the swap, and it has the next window with its active look. At full speed, counting switches with
+any frame that isn't one window with the active look:
+
+| Test windows | Switches | Clean |
+| --- | ---: | ---: |
+| Two apps | 60 | 60 |
+| Two windows of one app (AX main window instead of events) | 40 | 40 |
+| A window with a child window | 40 | 39 |
+| Two windows on each side | 40 | 39 |
+| Two apps, through the functions that AeroSpace calls | 40 | 39 |
+| One app, through the same functions | 30 | 30 |
+
+The three that aren't clean are each the first switch of a run, to an app that had just started: its first event
+takes long (see the section above), so its window arrives with the light shadow.
+
+Other things that were checked on the test windows:
+
+- A child window is in the same spaces as its parent after every operation, so it's hidden and shown with it.
+- A window in a shown group stays below a window that is in front of it: the groups don't reorder anything.
+- **The settling has to come before the focus.** If the next window is focused while the previous one is still on
+  the desktop (unseen, alpha 0), the next one is drawn as inactive at first: a light frame or more in 27 of 40
+  switches, and in 19 of 30 if the previous window stays for another 150 ms. Which half matters: with the previous
+  window put away before the focus and the next one taken out of `arriving` after it, 40 of 40 are clean; the
+  other way round, 24 of 40 have light frames. A build that settled 10 ms after the worker had answered showed it
+  on the real windows too: light frames in 8 of 39 switches. So the settling is part of the swap, although nothing
+  of it is seen.
+- **Showing a group at the moment of the switch doesn't work as a shortcut.** With the next windows parked in a
+  group of their own, a transaction could show that group (alpha 0) and save the move to `arriving`. But a request
+  for a window of a group that was shown a moment ago takes a frame longer: 14.9 ms instead of 2.5. So `arriving`
+  and `leaving` are shown when they're created, long before the first swap.
+
+### On the real windows
+
+Build `a8db2412` (the change on top of `7cc5fde1`, built from a copy of the repository), three runs: 39 switches
+between two Ghostty windows, Zen and Spotify, each on a workspace of its own, none with a frame with both shadows,
+none with a light frame. Right before, on the same windows (and a second Zen window): 12 of 26. Five earlier builds
+of the same swap, which differed in what happens after it, had no frame with both shadows in 195 switches either,
+most of them with two Zen windows on one workspace, one of them fullscreen.
+
+Where the time goes, from AeroSpace's signposts (medians, in ms after the light session of the switch began; 13
+switches before, 41 after):
+
+| | Before (`611d079e`) | After |
+| --- | ---: | ---: |
+| Next window on screen | about 13 | 18.7 |
+| Previous window gone | about 21 | 18.7 |
+| Focus requested | 27.6 | 28.5 |
+| Focus requested, 90th percentile | 53 | 41 |
+
+("After" is when the transaction is committed. "Before" has no signpost for either moment: the reveal was
+acknowledged after 9.4 ms, and a window is on screen about 3 ms after that; the wait for it ended after 18.7 ms, and
+the hide takes 2 or 3 more.) The steps: staging 5.5 ms, the wait 3.2, the transaction 0.5, settling 3.6. The
+answer of an app that is asked for its main window arrives 2 ms after the staging (seven at most, in 8 switches
+between the two Ghostty windows). So the next window shows up about 6 ms later than it used to, the previous one
+goes a little earlier, and the focus follows a millisecond later. The tail is shorter because a transaction
+replaced a request to WindowManager and a poll every 4 ms.
+
+Settling later, to give the focus a head start, was tried in two ways and dropped. All of it 10 ms after the
+worker's answer: the light frames above. Only the half that doesn't matter for the look (the next windows leave
+`arriving`) 10 ms after the answer: no light frame in 26 switches, and the focus was requested after 27.6 ms. But
+that half alone took 20 ms then, because it ran while the app was being activated, and a switch that followed
+within 60 ms would have waited for it.
+
+Checked on the installed build with a throwaway regular app, as in the section above: after every switch each
+window is on the desktop only or in the one hidden group only, a Shift tap and a pointer sweep reach the visible
+window (tracking areas of all three kinds), and after 30 switches fired 15 ms apart, and 16 fired 40 ms apart,
+every window is where it belongs.
+
+### What's left
+
+- The first switch to an app that has just started can arrive with the light shadow, as before.
+- A newer command that cancels a running switch ends its wait for the next windows early, as it did before. That
+  switch may show the wallpaper for a frame. The switch itself is finished either way.
+- While a swap is under way (about 13 ms), its windows are on screen in a group as well as on the desktop. Whatever
+  asks WindowServer in that moment sees the next windows as on screen before they can be seen.
+
+Probe sources and recordings are in `.local/shadow-blink/`: `swap.py`, `join.py`, `curtain.py`, `curtain4.py`,
+`order.py` and `native.py` (test windows), `stress.py`, `e2e2.py` and `swap-signposts.py` (the installed build),
+`Bench.m` (what the queries cost), and the recordings `before-swap-1` and `-2` (before) and `swap-final-1` to `-3`
+with `signposts-swap-6.ndjson` (after).

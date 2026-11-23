@@ -157,7 +157,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
     elsewhere), it's told that it's inactive again: on the next focus of another app, or after a second
     (`ActiveLookingApp`).
   - Its app is frontmost already (two Ghostty windows): the window becomes the main window of the app through AX
-    before the reveal, which waits for the answer for at most 50 ms. AppKit goes on drawing the window that is on
+    before it's shown, which waits for the answer for at most 50 ms. AppKit goes on drawing the window that is on
     screen as active until the new one shows up. The app isn't asked if the window is its main window already (its
     only window, or the one that had the keyboard last), so a game isn't asked about a window that's off screen.
 
@@ -167,13 +167,48 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Measured on the gaps around the window, with ScreenCaptureKit at 60 Hz: before, 12 of 14 switches between Ghostty,
   Zen and Spotify had light frames (four or five into Zen or Ghostty from another app). After, none of 39. The
   price: the window of the same app shows up 3 to 5 ms later (Ghostty's answer), any other one under 1 ms later.
-  What's left is the frame in which both windows are on screen, because the next window is revealed before the
-  previous one is hidden: their shadows add up for one frame in about half of the switches (18 of 39), as they did
-  before (7 of 14).
-  Getting rid of it takes both changes in one WindowServer transaction, which is only there for whole groups: see
-  "Shadow blink on workspace switches" in `dev-docs/native-window-hiding.md`.
+  That left the frame in which both windows were on screen, with their shadows on top of each other: the next entry.
+  Details: "Shadow blink on workspace switches" in `dev-docs/native-window-hiding.md`.
   Tests: `ActiveLookTest`, and `HiddenWindowParkingTest.testWindowThatGetsTheFocusLooksActiveBeforeItIsRevealed` with
   the four tests after it.
+
+- **Workspace switches show the next windows and hide the previous ones in the same frame**: a switch revealed the
+  windows of the next workspace, and hid the windows of the previous one once the next ones were on screen. A frame
+  in between had both, and their shadows add up: with gaps, the shadow went dark for a frame in about half of the
+  switches. The two steps can't be one: only WindowManager moves a window of another app between the desktop and a
+  group, one request at a time, and a window that joins the desktop is on screen 1 to 5 ms after the request, at a
+  moment that WindowManager picks. What does change in a transaction of our own is the alpha of a group that we
+  own, and while a group is shown, its alpha applies to all its windows, also to a window that is on the desktop as
+  well. So next to the hidden group there are two shown groups, both empty between switches (`WindowSwapGroups`
+  in `Sources/AppBundle/HiddenWindowParking.swift`): `arriving` with alpha 0, and `leaving` with alpha 1. A switch
+  with windows on both sides (`swap`):
+  1. Stage: the next windows move from the hidden group to `arriving`, and join the desktop there, unseen. The
+     previous windows join `leaving`, and stay on the desktop as they are (`AeroSpaceStageWindowSwap` in
+     `Sources/PrivateApi/WorkspaceGroups.m`).
+  2. Swap, once WindowServer lists the next windows as on screen: one transaction gives `arriving` alpha 1 and
+     `leaving` alpha 0 (`AeroSpaceCommitWindowSwap`).
+  3. Settle: the previous windows leave the desktop for the hidden group, the next ones leave `arriving`, and the
+     alphas go back (`AeroSpaceSettleWindowSwap`). Nothing of it shows, and afterwards every window is where it was
+     before this change: on the desktop only, or in the hidden group only. It's over before the worker answers,
+     so before the next window is focused: as long as the window that had the keyboard is on the desktop, seen or
+     not, macOS draws the window that gets the keyboard as inactive for a frame or more.
+
+  The request for the main window of an app with two windows (previous entry) is sent before the staging and
+  awaited after it, so the windows are staged while the app answers. A switch to or from an empty workspace reveals
+  or hides as before, and so does every switch if a private API is missing. If a step fails, the windows go back to
+  the desktop, like after any other failure of the hidden group. Also touches
+  `Sources/AppBundle/NativeWorkspaceVisibility.swift` (a window in a group of a swap is one of ours:
+  `shouldRegisterNativeWindow`, `isWindowOnForeignNativeDesktop`).
+  Measured the same way, on the same windows: right before, 12 of 26 switches had a frame with both shadows.
+  After, none of 39, and none had a light frame. The price: the next windows show up when the previous ones go,
+  19 ms into a switch. They used to show up after about 13 ms, and the previous ones went after about 21. The
+  focus is requested 28.5 ms into a switch (27.6 before), and 41 ms at the 90th percentile (53 before: the
+  transaction replaced a request to WindowManager and a poll every 4 ms).
+  What's left: the first switch to an app that has just started can still arrive with the light shadow (its first
+  event takes long), and a command that cancels a running switch ends the wait for the next windows early, as it
+  did before. Everything that was tried is in "Both workspaces in one frame" in `dev-docs/native-window-hiding.md`.
+  Tests: `HiddenWindowParkingTest.testWindowsOfTwoWorkspacesChangePlacesInOneTransaction` with the nine tests after
+  it.
 
 ## Rebuild, install, and restart — one command
 
