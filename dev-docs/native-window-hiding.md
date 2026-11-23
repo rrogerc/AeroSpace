@@ -639,3 +639,152 @@ Probe sources and recordings are in `.local/shadow-blink/`: `swap.py`, `join.py`
 `order.py` and `native.py` (test windows), `stress.py`, `e2e2.py` and `swap-signposts.py` (the installed build),
 `Bench.m` (what the queries cost), and the recordings `before-swap-1` and `-2` (before) and `swap-final-1` to `-3`
 with `signposts-swap-6.ndjson` (after).
+
+## New windows in their tile (2026-11-22)
+
+A new window used to show up where its app put it, and moved to its tile about 100 ms later. Now it shows up in its
+tile. Same machine as above: macOS 26.5.1 (25F80), one Studio Display at 60 Hz, SIP enabled, Ghostty 1.4.0.
+
+### What the flash was
+
+Cmd+N in Ghostty, next to another Ghostty window that has the workspace to itself. Ghostty gives the new window the
+size of the old one, so for six frames the screen was the new window. On build `4907eb17`, in ms after WindowServer
+knew the window (new windows through AppleScript, which does what Cmd+N does):
+
+| | ms |
+| --- | ---: |
+| WindowServer sends the level of the new window; AX posts `AXFocusedWindowChanged` | 0 |
+| The refresh of AeroSpace starts (30 ms after the first AX notification) | 13 to 30 |
+| Ghostty answers the first AX request (it's busy with its window until then) | 27 |
+| Ghostty shows the window: WindowServer lists it as on screen | 30 to 60 |
+| First frame with the window. It covers the workspace | 57 |
+| AeroSpace has found the window, and asks for the frames: the old window first | 83 to 105 |
+| First frame with both windows in their tiles | 157 |
+
+Six windows in three recordings: the new window covered the workspace for 100 to 117 ms in all of them, was in its
+tile after 157 to 181 ms (the median: 165), and the layout was settled (the old window had made room and redrawn)
+after 257 to 345 ms (267).
+
+### What can't be done
+
+Nobody but its app decides where a window is shown first, and AeroSpace can ask for another frame only through AX,
+which the app answers when it has the time: Ghostty not before it's done with its window. Being faster makes the
+flash shorter (the refresh alone waited 30 ms before it started), and never removes it: the window is on screen
+before its app answers anybody.
+
+### What WindowServer tells, and when
+
+- **The level of every new window** (`SLSRegisterNotifyProc`, event 811). AppKit sets the level of a window the
+  moment it creates it. The event arrives for any window, also one that wasn't asked for, once the connection has
+  called `SLSRequestNotificationsForWindows` with at least one window ID. An ID that no window has will do
+  (4000000000); an empty list won't.
+- At that moment a window has no size, no space, level 0, no parent, and the same tags whatever it's going to be
+  (0x200100000000): an ordinary window, a panel, a sheet, a popover and a menu all look the same. When its app
+  shows it, a sheet, a popover, a child window and a menu have a parent, a menu has level 101, and a utility panel
+  level 3.
+- **The window is on screen later**, with the next transaction of its app. From the event to WindowServer listing
+  the window as on screen:
+
+  | App | Windows | ms |
+  | --- | ---: | --- |
+  | Ghostty | 23 | 32 to 62 (the median: 49) |
+  | Zen ("New Blank Window") | 6 | 7 to 38 |
+  | Test app, window created and ordered front in one go | 10 | 14 to 56 (34) |
+  | The same with `defer: YES` | 8 | 30 to 37 (33) |
+  | Test app, ordered front 30 ms after it's created | 8 | 51 to 77 (58) |
+
+  And its first frame comes 19 to 28 ms after that, also for a window that nobody touched: WindowManager shows it
+  with a transaction of its own (see "Why the two steps can't be closer together" above).
+- Event 1325 (the window joined a space) arrives when the window is shown: too late. Events 806, 807 and 815 (moved,
+  resized, ordered in) only arrive for the windows that were asked for.
+- AX is no earlier. `AXWindowCreated` is posted when the app orders the window front (9 ms after the event above in
+  the test app, 15 to 40 with Ghostty). `AXFocusedWindowChanged` comes with the event, but the window ID of its
+  element can't be read while the app is busy: 35 and 42 ms with Ghostty.
+
+### What works
+
+A window that joins a shown group with alpha 0 before its app shows it is never drawn. The request
+(`SLSBridgedSpaceAddWindowsAndRemoveFromSpacesOperation`, selector 8) takes effect 0.4 to 9 ms after it's sent. A
+window that isn't on the desktop yet stays off it when it's shown: it's in the group only, WindowServer lists it as
+on screen, and nothing of it is seen. Taken out of the group (`SLSBridgedRemoveWindowsFromSpacesOperation`),
+WindowServer puts it on the active desktop by itself, lists it as on screen 9 to 11 ms after the request, and its
+first frame comes 24 to 42 ms after the request.
+
+With a probe that put every new window of one app into such a group at the event, and took it out 300 or 400 ms
+later: none of 24 test windows (8 of each kind in the table) and none of 2 Ghostty windows was in a frame before it
+was taken out.
+
+So AeroSpace does the same (`NewWindowCurtain`), and takes the window out when it has the frame of its tile. A new
+Ghostty window on the build of this change (`132ac332`, built from a copy of the repository):
+
+| | ms |
+| --- | ---: |
+| WindowServer sends the level. The window joins the curtain, and the refresh starts (it doesn't wait 30 ms) | 0 |
+| Ghostty answers the first AX request | 15 to 40 |
+| Ghostty shows the window, behind the curtain | 30 to 60 |
+| The window is in the tree, and the refresh lays out before its other questions. The new window is asked for its frame | 70 |
+| WindowServer has the frame. The window leaves the curtain | 100 |
+| WindowServer lists it as on screen. The old window is asked for its frame | 105 to 115 |
+| First frame with the new window: in its tile, on top of the old one | 134 |
+| The old window has made room and redrawn | 175 to 225 |
+
+Twenty windows next to a window that doesn't change by itself, ten on that build and ten on the last one
+(`cf1c7fc4`, which only added two safeguards): none was in a frame outside of its tile. They were in their tile
+after 93 to 155 ms (the median: 138), and the layout was settled after 173 to 227 ms (195; in one recording the new
+shell printed something much later). So the new window is in its tile a frame or two earlier than it used to be,
+and the six frames before that are gone. 16 more windows on three earlier builds of the change: none outside of its
+tile either.
+
+(A recording next to the terminal that these measurements were started from counts differently: its text changes
+by itself, in every frame. `stats.py` compares the place of the window with the frame before and with the settled
+frame, so the recordings behind the numbers are the ones next to a window that stands still.)
+
+Other windows, on the same build or on the first one of the change:
+
+- **Zen**, six new blank windows: Zen shows a window 7 to 38 ms after it creates it, 4 to 6 ms after the window
+  joined the curtain in the three that were closest. None was seen before it was in its tile, 154 to 228 ms after
+  its birth.
+- **A regular test app** (`spawn-app regular`), its windows alone on a workspace: they left the curtain 17 to 33 ms
+  after the app had shown them, and the first frame with them came 80 to 97 ms after their birth. The first window
+  of the app took 193 ms: AeroSpace didn't know the app yet.
+- **A window that AeroSpace floats** (not resizable, which AeroSpace takes for a dialog): it left the curtain 7 to
+  13 ms after its app had shown it. On an earlier build of the change it was 40 to 58 ms: the refresh that found the
+  window waited 30 ms for more events, and laid out at its end.
+- **Sheets, popovers, menus**: the window gets its parent (and a menu its level) before or with the transaction
+  that shows it, so it left the curtain before its app showed it (two of three sheets, both popovers, the menu), or
+  within 4 ms (the third sheet).
+- **Windows that are never shown**: a regular app creates four of them when it starts. They left the curtain when
+  their deadline passed, and nobody saw the difference.
+
+### What it costs
+
+- A new window is seen later than it used to be seen in the wrong place: 138 ms after its birth instead of 57 with
+  Ghostty. It's not later than it used to be in the right place.
+- A dialog shows up half a frame later, and a window that its app shows more than 150 ms before AeroSpace manages it
+  (an app that doesn't answer AX) shows up 150 ms later, where its app put it.
+- Every new window of a regular app costs three questions to WindowServer and a request to WindowManager, and while
+  a window is behind the curtain, three questions every 3 ms (every 50 ms as long as its app hasn't shown it).
+- While the new window waits for its frame, the frames of the other windows of the workspace wait on the AX threads
+  of their apps: 10 to 50 ms with Ghostty, 400 ms at most.
+
+### What's left
+
+- The window is on screen about 30 ms after it leaves the curtain. With the windows of a swap, a transaction shows
+  them in the next frame. That takes a group per window: the alpha of a group applies to all its windows.
+- Between the event and the request, AeroSpace asks WindowServer three questions (whose window it is, whether it's
+  ordered in, which spaces it's in). Together they took under a millisecond in two of three births, and 7 to 10 ms
+  in the others: WindowServer is busy right after a window is created. Zen shows its window 7 ms after the event at
+  the least. No window was seen through that gap so far.
+- An app that creates a window more than 5 s before it shows it gets no curtain: the window is taken out when the
+  5 s are over, and a window gets the curtain once.
+- The opening animation of macOS goes on behind the curtain. A window that leaves it early shows the rest of it.
+
+Probe sources and recordings are in the ignored directory `.local/new-window-flash/`: `SpawnProbe.m` (WindowServer's
+events, the AX notifications, the state of the windows and the pixels on one clock, and the curtain of the probe),
+`SpawnApp.m` (a test app that opens windows of every kind), `AxTool.m` (presses a menu item), `run.py` (records
+and prints timelines: `ghostty`, `testapp`, `app`, `show`, `seen`, `check`), `stats.py` (the three numbers per
+window), `kinds.py` and `live.py` (every kind of window: what WindowServer knows, and what AeroSpace does),
+`trial.sh`, `check.sh` and `reinstall.py` (build, test and install from a copy of the repository). The recordings:
+`base-1`, `base-2` and `other-app-1` (before), `c-deferred`, `c-immediate`, `c-later-30`, `imm-c1` and `curtain-1`
+(the curtain of the probe), `kind-*` (what WindowServer knows), `new-1` to `new-3` and `t1-*` (earlier builds),
+`final-2`, `final-3`, `t4-*`, `zen-1` and `zen-2` (the numbers above).

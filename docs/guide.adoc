@@ -530,6 +530,12 @@ This option is off by default and currently supports one monitor. It uses privat
 macOS APIs; when they are unavailable, AeroSpace uses the normal corner-hiding
 behavior. Set the option to `false` and reload the config to restore that behavior.
 
+With this option, a new window also shows up in its tile right away. macOS lets an app show a new window
+wherever the app likes, and AeroSpace can move the window only after that: without the option, a new window covers
+its neighbors for a moment before it is tiled. With it, AeroSpace keeps a new window unseen until the window has the
+frame of its tile, which takes about a tenth of a second. Menus, sheets and popovers aren't held back, and a window
+that its app has shown is never unseen for longer than half a second.
+
 AeroSpace remembers the macOS desktop on which native hiding starts. Adding an
 ordinary desktop does not recreate parking. While another desktop or native
 fullscreen Space is active, AeroSpace restores its parked windows and suspends

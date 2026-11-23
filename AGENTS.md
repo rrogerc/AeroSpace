@@ -210,6 +210,61 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Tests: `HiddenWindowParkingTest.testWindowsOfTwoWorkspacesChangePlacesInOneTransaction` with the nine tests after
   it.
 
+- **New windows show up in their tile**: an app shows a new window where it likes, and AeroSpace moved it to its tile
+  when it found out. With Ghostty that took 100 ms: six frames in which the new window covered the whole workspace.
+  Nobody can move a window before its app shows it. But WindowServer knows a window tens of milliseconds before it's
+  on screen, and a window in a shown group with alpha 0 isn't drawn (the previous entry). So a new window waits
+  behind a curtain, a third shown group with alpha 0, until it has its frame (`NewWindowCurtain` in
+  `Sources/AppBundle/NewWindowCurtain.swift`):
+  1. Birth: AppKit sets the level of a window the moment it creates it, and WindowServer sends the level of every
+     window to a connection that asked for the notifications of at least one window (any ID will do).
+     AeroSpace asks for them at startup (`AeroSpaceObserveWindowEvents` in `Sources/PrivateApi/WindowEvents.m`), and
+     a window that isn't ordered in, has no space, no level and no parent, and belongs to a regular app joins the
+     curtain (`AeroSpaceCurtainWindow` in `Sources/PrivateApi/WorkspaceGroups.m`). Its app shows it there, unseen:
+     30 to 60 ms after the birth with Ghostty, 7 to 40 with Zen, 14 at the least with a plain AppKit app.
+  2. Frame: AeroSpace finds the window through AX as before, and asks its app for the frame of its tile. The new
+     windows of a layout are asked first (`LayoutContext.newWindows` in `Sources/AppBundle/layout/layoutRecursive.swift`).
+     The frames of the other windows wait on the AX threads of their apps until the new ones are on screen
+     (`newWindowsToShowFirst`, `NewWindowCurtain.wait`): a window that shrinks before the new one is there shows the
+     wallpaper in between.
+  3. Show: when WindowServer has the frame (within 1.5 % of it: macOS scales a window while it opens), the window
+     leaves the curtain (`AeroSpaceUncurtainWindow`). It shows up in its tile, on top of the windows that make room
+     for it, and they follow.
+
+  At birth every window looks the same to WindowServer, also a menu, a sheet, a popover, and a window that AeroSpace
+  never manages. So nothing stays behind the curtain for long. A window with a parent or a level leaves when its app
+  shows it (WindowServer has both by then). A window that AeroSpace manages and doesn't tile (a dialog, a popup)
+  leaves at the next layout (`showNewWindowsWithoutTile` in `Sources/AppBundle/layout/refresh.swift`). A new window
+  of a hidden workspace goes straight to the hidden group (`park` in `HiddenWindowParkingWorker.apply`). Every step
+  has a deadline (`NewWindowCurtainTiming`), and whatever happens, a window that its app has shown is unseen for
+  450 ms at most. The curtain only asks WindowServer, never the app. If WindowManager doesn't take a window out,
+  the whole group goes, and WindowServer does.
+
+  To get the frame out early, the refresh that finds a new window doesn't wait 30 ms for more events, isn't started
+  over by the AX notifications that follow (they're refreshed after it), and lays out as soon as the window is in
+  the tree, before it asks the app its other questions (`isAboutToPlaceNewWindow` and `placesNewWindow` in
+  `refresh.swift`). The tray gets its text after the layout.
+
+  Only with `enable-native-window-hiding`, and not for a window that is created while a mouse button is down (a tab
+  that is dragged out follows the pointer). `AEROSPACE_NEW_WINDOW_CURTAIN=0` in the environment of AeroSpace turns it
+  off. Also touches `Sources/AppBundle/NativeWorkspaceVisibility.swift` (the curtain exists while windows are
+  hidden natively; a window behind it is one of ours), `Sources/AppBundle/HiddenWindowParking.swift` (a window
+  behind the curtain gets its frame like a window on the desktop), `Sources/AppBundle/tree/MacApp.swift`
+  (`setAxFrame`), `Sources/AppBundle/tree/MacWindow.swift` and `Sources/AppBundle/initAppBundle.swift`.
+
+  Measured with ScreenCaptureKit at 60 Hz, on new Ghostty windows next to another one, in ms after WindowServer
+  knew the window. Before (6 windows): the new window covered the workspace for 100 to 117 ms every time, was in its
+  tile after 165 ms (the median), and the layout was settled after 267. After (20 windows): never outside its tile,
+  in its tile after 138 ms, settled after 195. So nothing shows up later than it did: only the frames in between
+  are gone. New Zen windows and the windows of a plain AppKit app show up in their tile as well. A dialog leaves
+  the curtain 7 to 13 ms after its app shows it, and sheets, popovers and menus before that or within 4 ms.
+  What's left: an app that doesn't answer AX within 150 ms of showing its window (it shows up where its app put it,
+  as before), a window that its app creates more than 5 s before it shows it, and the apps that show a window
+  within a few milliseconds of creating it (Zen: 4 to 6 ms after the curtain, and never seen so far).
+  Everything that was measured is in "New windows in their tile" in `dev-docs/native-window-hiding.md`.
+  Tests: `NewWindowCurtainTest`, and `HiddenWindowParkingTest.testNewWindowBehindTheCurtainGetsItsFrameLikeAWindowOnTheDesktop`
+  with the two tests after it.
+
 - **No sponsorship item in the tray menu**: upstream's "Sponsor AeroSpace on GitHub" button and its rotating
   messages are gone (`Sources/AppBundle/ui/MenuBar.swift`, `Sources/AppBundle/ui/TrayMenuModel.swift`, and the
   deleted `Sources/Common/model/sponsorshipPrompts.swift`). If upstream changes the prompts, a rebase conflicts on
