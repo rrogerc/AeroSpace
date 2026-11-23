@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 source ./script/setup.sh
 
 export XCODEGEN_AEROSPACE_CODE_SIGN_IDENTITY="aerospace-codesign-certificate"

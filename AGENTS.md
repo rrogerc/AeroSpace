@@ -317,11 +317,27 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   deleted `Sources/Common/model/sponsorshipPrompts.swift`). If upstream changes the prompts, a rebase conflicts on
   the deleted file: keep it deleted.
 
-- **Upstream's project files are gone**: what only upstream's own project needs is deleted. That's `.github/` (CI,
-  issue and PR templates, funding), `CONTRIBUTING.md`, `install-from-sources.sh` (the brew cask install),
-  `script/publish-release.sh`, `makefile`, and the scripts that run the debug build (`run-cli.sh`, `run-debug.sh`,
-  `script/reset-accessibility-permission-for-debug.sh`). `build-debug.sh` stays: `test.sh` builds through it. If
-  upstream changes one of the deleted files, taking upstream conflicts on it: keep it deleted.
+- **The repo is laid out for this fork**: upstream's layout serves a project with CI, a website, releases and brew
+  casks. Three changes:
+  - Deleted, because only upstream's own project needs it: `.github/` (CI, issue and PR templates, funding),
+    `CONTRIBUTING.md`, `install-from-sources.sh` (the brew cask install), `script/publish-release.sh`, `makefile`,
+    and the scripts that run the debug build (`run-cli.sh`, `run-debug.sh`,
+    `script/reset-accessibility-permission-for-debug.sh`).
+  - The release build makes only what gets installed: the app and the CLI. The website, the man pages, the shell
+    completion, the zip and the brew casks are gone, and with them `build-docs.sh`, `build-shell-completion.sh`,
+    `script/build-brew-cask.sh`, `Gemfile`, `.bundle/`, `grammar/`, and the Ruby and Rust that they needed. `docs/`
+    stays: `script/generate.sh` makes the help texts of the CLI from `docs/aerospace-*.adoc`. Nothing renders
+    `docs/` to HTML or man pages any more, so nothing checks its AsciiDoc syntax either.
+  - Moved: every script but `rebuild-and-install.sh` is in `script/` (`build-release.sh`, `build-debug.sh`,
+    `test.sh`, `swift-test.sh`, `lint.sh`, `format.sh`, `generate.sh`), and `axDumps/` is
+    `Sources/AppBundleTests/axDumps/` (excluded from the test target in `Package.swift`).
+
+  When taking upstream: git follows the moves, so upstream's changes to a moved file land in the new place. If
+  upstream changes a deleted file, it conflicts: keep it deleted. If upstream changes a step that was cut from
+  `build-release.sh` (docs, shell completion, pack, brew cask), drop the change. A new command of upstream comes
+  with a grammar change: drop that too. Upstream has since split its `build-release.sh` into
+  `script/build-release-cli.sh`, `script/build-release-app.sh` and `script/validate-release-binaries.sh`, and added
+  `versions.sh` at the root: the first merge conflicts there, and `versions.sh` belongs in `script/`.
 
 ## Rebuild, install, and restart — one command
 
@@ -333,14 +349,14 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
 (Also runnable as `aerospace-rebuild` — `~/.local/bin/aerospace-rebuild` is a symlink to this script.)
 
 It does, in order:
-1. **Picks the right Ruby** — prepends keg-only `ruby@3.4` to `PATH` (see Ruby note below), so no manual `PATH=` prefix is needed.
-2. **Builds** the release via `./build-release.sh` (man pages + site, shell completion, universal arm64+x86_64 binary, Xcode app, codesign, validation, zip/brew packaging).
-3. **Quits** the running AeroSpace.
-4. **Installs** `.release/AeroSpace.app` → `/Applications/AeroSpace.app` and `.release/aerospace` → `~/.local/bin/aerospace`
-   (the install is a manual copy — this fork does **not** use the `aerospace-dev` brew cask, and upstream's `install-from-sources.sh` that sets it up is deleted).
-5. **Relaunches**, waits for the server, and prints the running version.
+1. **Builds** the release via `./script/build-release.sh` (universal arm64+x86_64 CLI, Xcode app, codesign, validation).
+   It refuses to build with uncommitted changes: the binaries carry the git hash, and the build ends with `git checkout .`.
+2. **Quits** the running AeroSpace.
+3. **Installs** `.release/AeroSpace.app` → `/Applications/AeroSpace.app` and `.release/aerospace` → `~/.local/bin/aerospace`
+   (the install is a manual copy: this fork doesn't use a brew cask).
+4. **Relaunches**, waits for the server, and prints the running version.
 
-Install locations / Ruby are overridable via env vars: `APP_DEST`, `CLI_DEST`, `RUBY_FORMULA`.
+Install locations are overridable via env vars: `APP_DEST`, `CLI_DEST`.
 
 The script deliberately does **not** rebase (conflicts need a human). The full update flow is:
 
@@ -350,26 +366,26 @@ git fetch upstream && git rebase upstream/main   # resolve any conflicts (usuall
 git push --force-with-lease origin main          # update the fork (rebase rewrites history)
 ```
 
-## Ruby note (why the script juggles versions)
+## Tests
 
-The `Gemfile` pins `ruby '~> 3.0'` (>=3.0, <4.0) and `Gemfile.lock` pins `BUNDLED WITH 2.7.1`.
-On this machine `/usr/bin/ruby` is 2.6 (too old) and the brew default `ruby` is 4.x (too new), so **neither works**.
-Fix (one-time): `brew install ruby@3.4` then `"$(brew --prefix ruby@3.4)/bin/gem" install bundler -v 2.7.1`.
-`ruby@3.4` is keg-only (not on the default `PATH`); `rebuild-and-install.sh` adds it to `PATH` for the build so
-`build-release.sh`'s docs step (`build-docs.sh` → `bundle`) resolves to it. Gems vendor into `.deps/bundler-path`.
+```bash
+./script/test.sh        # everything: debug build with warnings as errors, tests, format, lint, unused code
+./script/swift-test.sh  # only the tests
+```
 
-If you ever build with `build-release.sh` directly, prefix it: `PATH="$(brew --prefix ruby@3.4)/bin:$PATH" ./build-release.sh`.
+`test.sh` formats the code in place, and fails at the end if anything is uncommitted.
 
 ## Prerequisites (already set up here)
 
 - Swift 6.2.3 (`.swift-version`); `/usr/bin/swift` matches, so `swiftly` is not required.
 - Self-signed codesign cert **`aerospace-codesign-certificate`** in Keychain. Rebuilding with the same cert keeps
   macOS Accessibility permission across reinstalls (no re-approval prompt).
-- Rust/cargo (for shell completion), `ruby@3.4` + bundler 2.7.1 (for docs).
+- bash 5 or newer on `PATH` (`brew install bash`): `script/setup.sh` refuses the bash 3.2 of macOS.
 
 ## Conventions
 
-- Build scripts live at the repo root and `cd "$(dirname "$0")"`. `script/setup.sh` nukes `PATH` to
-  `.deps/bin:/bin:/usr/bin` and wraps optional tools resolved via `which` at source time — that's why Ruby must be
-  on `PATH` *before* invoking the build.
+- Scripts live in `script/` and start with `cd "$(dirname "$0")/.."`, so all of them run from the repo root and
+  call each other as `./script/<name>.sh`. Only `rebuild-and-install.sh` is at the root, where the
+  `aerospace-rebuild` symlink points. `script/setup.sh` nukes `PATH` to `.deps/bin:/bin:/usr/bin` and wraps
+  optional tools resolved via `which` at source time, so a tool has to be on `PATH` *before* a script is invoked.
 - See `dev-docs/development.md` for upstream's notes on dependencies, the codesign certificate, and Xcode.

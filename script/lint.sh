@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 source ./script/setup.sh
 
-./format.sh
+./script/format.sh
 
 if grep -E '( Task\.init| Task\s*\{| Task\()' -r ./Sources; then
     echo "ERROR: don't use Task.init directly. Use Task.startUnstructured instead."

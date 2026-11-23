@@ -15,13 +15,8 @@ To build/install from sources do the following:
 2.  Install [swiftly](https://github.com/swiftlang/swiftly).
     Swiftly is a Swift toolchain manager that will make sure that you use the same swift version as written in `.swift-version` file.
     `brew install swiftly`
-3.  If you want to build shell completion, install rust, bash and fish
-    -   Install Rust using rustup. https://www.rust-lang.org/tools/install
-    -   `brew install bash fish`
-4.  If you want to build man pages, install Ruby >= 3.0. I recommend using [rbenv](https://github.com/rbenv/rbenv).
-    -   `rbenv install 3.3.4` (or whatever 3.x version)
-    -   Install asciidoctor using Ruby `bundler`. `cd AeroSpace && bundler install`
-5.  Install optional `xcbeautify` to make Xcode build logs readable. `brew install xcbeautify`
+3.  Install bash 5 or newer. `brew install bash`
+4.  Install optional `xcbeautify` to make Xcode build logs readable. `brew install xcbeautify`
 
 ## 2. Create codesign certificate
 
@@ -38,17 +33,14 @@ If you only plan to build the debug version of AeroSpace, you can run it from th
 ## 3. Entry point scripts
 
 **Debug build**
--   `build-debug.sh` - Build debug build to `.debug` dir by using SPM. (Xcode is not involved)
--   `test.sh` - Run tests.
--   `swiftformat.sh` - Format the code.
--   `build-docs.sh` - Build the site and man pages to `.site` and `.man` dirs respectively.
--   `build-shell-completion.sh` - Build shell completion to `.shell-completion`.
-    You can test that the completion works properly by sourcing the file `source ./.shell-completion/zsh/_aerospace`
--   `generate.sh` - Regenerate generated project files. `xcode/AeroSpace.xcodeproj` is generated, and some of the source files
+-   `script/build-debug.sh` - Build debug build to `.debug` dir by using SPM. (Xcode is not involved)
+-   `script/test.sh` - Run tests.
+-   `script/format.sh` - Format the code.
+-   `script/generate.sh` - Regenerate generated project files. `xcode/AeroSpace.xcodeproj` is generated, and some of the source files
     (the source files have `Generated` suffix in their names).
 
 **Release build**
--   `build-release.sh` - Build release build to `.release` dir by using Xcode.
+-   `script/build-release.sh` - Build release build to `.release` dir by using Xcode.
 -   `rebuild-and-install.sh` - Build release build from sources, install it, and restart AeroSpace.
 
 ## IDE
