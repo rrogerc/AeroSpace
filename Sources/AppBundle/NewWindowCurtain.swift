@@ -25,15 +25,28 @@ final class NewWindowCurtain: Sendable {
         let job: RunLoopJob
         let target: CGRect
         let asked: ContinuousClock.Instant
+        /// The job got as far as asking the app: see `asking`
+        var isAsked = false
         var answered: ContinuousClock.Instant?
+
+        /// The job is over, and it never asked the app
+        var cameToNothing: Bool { job.isComplete && !isAsked }
     }
 
     private struct Entry {
         let pid: Int32
         let born: ContinuousClock.Instant
         var shown: ContinuousClock.Instant?
+        /// Since when the window waits for a layout: AeroSpace has it in its tree, or a frame came to nothing
         var managed: ContinuousClock.Instant?
         var frame: Frame?
+        /// The app was asked for the frame a second time: it had answered, and WindowServer had another frame
+        var askedAgain = false
+        /// The frame of the window came to nothing, or the other windows didn't make room for it: see `wait`.
+        /// Until a layout asks for its frame (again)
+        var needsLayout = false
+        /// How often AeroSpace was told to look at the app because of this window
+        var looks = 0
         var isLeaving = false
         /// How often the window couldn't be taken out of the group
         var failures = 0
@@ -72,9 +85,10 @@ final class NewWindowCurtain: Sendable {
     private let driver: any NewWindowCurtainDriver
     private let timing: NewWindowCurtainTiming
     private let clock: @Sendable () -> ContinuousClock.Instant
-    /// The app has shown a window that AeroSpace doesn't manage yet. AeroSpace looks at the app right away: an app
-    /// that has just started isn't known to it at all
-    private let onShown: @Sendable (Int32) -> ()
+    /// AeroSpace looks at the app right away, and lays out. The app has shown a window that AeroSpace doesn't manage
+    /// yet (an app that has just started isn't known to it at all), or a window needs a layout that nothing else
+    /// is going to start
+    private let lookAt: @Sendable (Int32) -> ()
     /// nil in tests: everything runs on the thread of the caller, and `check` is called by hand
     private let queue: DispatchQueue?
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -86,7 +100,7 @@ final class NewWindowCurtain: Sendable {
         timing: NewWindowCurtainTiming = NewWindowCurtainTiming(),
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         queue: DispatchQueue? = DispatchQueue(label: "bobko.aerospace.new-window-curtain", qos: .userInteractive),
-        onShown: @escaping @Sendable (Int32) -> () = { pid in
+        lookAt: @escaping @Sendable (Int32) -> () = { pid in
             Task.startUnstructured { @MainActor in
                 if TrayMenuModel.shared.isEnabled {
                     scheduleCancellableCompleteRefreshSession(.globalObserver("newWindowShown"), scope: .app(pid))
@@ -98,13 +112,17 @@ final class NewWindowCurtain: Sendable {
         self.timing = timing
         self.clock = clock
         self.queue = queue
-        self.onShown = onShown
+        self.lookAt = lookAt
     }
 
     // MARK: - What AeroSpace knows
 
     var group: UInt64? { state.withLock { $0.group?.id } }
     var curtained: Set<UInt32> { state.withLock { Set($0.windows.keys) } }
+    func isBehind(_ id: UInt32) -> Bool { state.withLock { $0.windows[id] != nil } }
+    /// Whose the windows behind the curtain are. WindowServer has said it since they were created, while its list of
+    /// windows (CGWindowList) has no record to go by for a window that its app hasn't shown yet: it has no size
+    var owners: [UInt32: Int32] { state.withLock { $0.windows.mapValues(\.pid) } }
     /// The apps of the windows that wait for AeroSpace to ask for their frame. Not of a window that its app created
     /// a while ago and hasn't shown: it may never show it
     var appsWithoutFrame: Set<Int32> {
@@ -143,13 +161,13 @@ final class NewWindowCurtain: Sendable {
 
     /// Every window leaves the curtain. With `wait`, they have left when this returns
     func deactivate(wait: Bool = false) {
-        let (group, home, ids) = state.withLock { state in
+        let (group, home, ids, apps) = state.withLock { state in
             defer {
                 state.group = nil
                 state.windows = [:]
                 state.left = [:]
             }
-            return (state.group, state.home, Array(state.windows.keys))
+            return (state.group, state.home, Array(state.windows.keys), Set(state.windows.values.filter(\.needsLayout).map(\.pid)))
         }
         guard let group else { return }
         let leave: @Sendable () -> () = { [self] in
@@ -160,6 +178,7 @@ final class NewWindowCurtain: Sendable {
                 removeOldGroupsLater()
             }
             watch()
+            apps.forEach(lookAt)
         }
         if let queue, wait { queue.sync(execute: leave) } else { run(leave) }
     }
@@ -187,13 +206,24 @@ final class NewWindowCurtain: Sendable {
         }
     }
 
-    /// AeroSpace asked the app of the window for this frame. The window leaves the curtain when WindowServer has it
+    /// A layout is going to ask the app of the window for this frame, with `job`. The window leaves the curtain when
+    /// WindowServer has the frame. Called before the job can run: see `asking`
     func frame(_ id: UInt32, _ job: RunLoopJob, _ target: CGRect) {
         let now = clock()
         state.withLock { state in
             guard state.windows[id] != nil else { return }
             state.windows[id]?.frame = Frame(job: job, target: target, asked: now)
+            state.windows[id]?.needsLayout = false
             if state.windows[id]?.managed == nil { state.windows[id]?.managed = now }
+        }
+    }
+
+    /// The job of a frame is asking the app now, or has found that WindowServer has the frame already. A job that
+    /// ends without it never got that far: the window wasn't ready for a frame, or a command came in between. Then
+    /// nobody has asked the app, and its window would wait for a frame that isn't coming
+    func asking(_ id: UInt32, _ job: RunLoopJob) {
+        state.withLock { state in
+            if state.windows[id]?.frame?.job === job { state.windows[id]?.frame?.isAsked = true }
         }
     }
 
@@ -205,8 +235,10 @@ final class NewWindowCurtain: Sendable {
     /// The windows aren't behind the curtain anymore, without having been shown: they're gone, or parked with the
     /// windows of a hidden workspace
     func forget(_ ids: [UInt32]) {
-        let known = state.withLock { state in ids.filter { state.windows.removeValue(forKey: $0) != nil } }
-        if !known.isEmpty { watch() }
+        let known = state.withLock { state in ids.compactMap { state.windows.removeValue(forKey: $0) } }
+        if known.isEmpty { return }
+        watch()
+        Set(known.filter(\.needsLayout).map(\.pid)).forEach(lookAt)
     }
 
     private func watch() {
@@ -214,16 +246,47 @@ final class NewWindowCurtain: Sendable {
     }
 
     /// Blocks the AX thread of an app whose window makes room for new windows, until they can be seen: a window that
-    /// shrinks before the new one is there shows the wallpaper in between
-    func wait(for windows: Set<UInt32>, _ job: RunLoopJob) {
-        let isBehind = { [state] in state.withLock { curtain in windows.contains { curtain.windows[$0] != nil } } }
-        if !isBehind() { return }
+    /// shrinks before the new one is there shows the wallpaper in between.
+    ///
+    /// false if one of the new windows has no frame coming. Then this layout doesn't get it into its tile, and nobody
+    /// makes room for it yet: the layout that asks for its frame does, or the one after the window has left the
+    /// curtain as it is. Waiting for it here would keep that layout from the AX thread of the app, which the two
+    /// windows often share (a new terminal window next to the one it was opened from)
+    func wait(for windows: Set<UInt32>, _ job: RunLoopJob) -> Bool {
+        enum NewWindows { case seen, behind, withoutFrame }
+        let look = { [state] () -> NewWindows in
+            state.withLock { curtain in
+                var result = NewWindows.seen
+                for id in windows {
+                    guard let entry = curtain.windows[id] else { continue }
+                    if entry.isLeaving || entry.frame?.cameToNothing == false {
+                        result = .behind
+                    } else {
+                        curtain.windows[id]?.needsLayout = true
+                        return .withoutFrame
+                    }
+                }
+                return result
+            }
+        }
+        switch look() {
+            case .seen: return true
+            case .withoutFrame: return false
+            case .behind: break
+        }
         let interval = signposter.beginInterval("waitForNewWindows")
         defer { signposter.endInterval("waitForNewWindows", interval) }
         // Otherwise, macOS may delay the timer below by tens of milliseconds, because AeroSpace is a background app
-        ProcessInfo.processInfo.performActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: "Showing a new window") { [timing] in
+        return withExtendedLifetime(Urgency()) {
             let deadline = ContinuousClock.now + timing.others
-            while !job.isCancelled && ContinuousClock.now < deadline && isBehind() { usleep(1000) }
+            while !job.isCancelled && ContinuousClock.now < deadline {
+                switch look() {
+                    case .seen: return true
+                    case .withoutFrame: return false
+                    case .behind: usleep(1000)
+                }
+            }
+            return true
         }
     }
 
@@ -306,42 +369,72 @@ final class NewWindowCurtain: Sendable {
     }
 
     private func check(_ id: UInt32) {
-        guard let entry = state.withLock({ $0.windows[id] }), !entry.isLeaving else { return }
+        guard state.withLock({ $0.windows[id]?.isLeaving == false }) else { return }
         // WindowServer doesn't know the window, or didn't answer. If the window is still there, it mustn't stay unseen
         guard let info = driver.window(id) else { return leave(id, "gone") }
         let now = clock()
         // A menu, a sheet, a popover, a panel above the other windows: none of them gets a tile
         if info.level != 0 || info.parent != 0 { return leave(id, "not a window of its own") }
-        let shown = entry.shown ?? (info.isOrderedIn ? now : nil)
-        let answered = entry.frame.flatMap { $0.answered ?? ($0.job.isComplete ? now : nil) }
-        state.withLock { state in
-            state.windows[id]?.shown = shown
-            // Not the frame of a layout that came in between: its app hasn't answered that one yet
-            if let frame = entry.frame, state.windows[id]?.frame?.job === frame.job { state.windows[id]?.frame?.answered = answered }
-        }
-        if entry.shown == nil && shown != nil && entry.managed == nil { onShown(entry.pid) }
-        let reason: String? = if let frame = entry.frame {
-            if answered != nil, isInPlace(info.bounds, frame.target) {
-                "in place"
-            } else if let answered, now - answered >= timing.refused {
-                "another frame"
-            } else if now - frame.asked >= timing.inPlace {
-                "no frame in time"
-            } else {
-                nil
+        // One step: a layout may ask for another frame meanwhile, and the job of a frame says that it's asking
+        // before it's over
+        let (reason, look) = state.withLock { state -> (String?, Int32?) in
+            guard var entry = state.windows[id], !entry.isLeaving else { return (nil, nil) }
+            defer { state.windows[id] = entry }
+            var look = false
+            if entry.shown == nil, info.isOrderedIn {
+                entry.shown = now
+                signposter.emitEvent("newWindowShown", "window: \(id, privacy: .public)")
+                look = entry.managed == nil || entry.needsLayout
             }
-        } else if let managed = entry.managed {
-            now - managed >= timing.placed ? "no layout in time" : nil
-        } else if let shown {
-            now - shown >= timing.managed ? "not managed in time" : nil
-        } else {
-            now - entry.born >= timing.shown ? "not shown in time" : nil
+            if let frame = entry.frame, frame.job.isComplete {
+                if frame.isAsked {
+                    if frame.answered == nil { entry.frame?.answered = now }
+                } else {
+                    // Nobody asked the app. The layout that does must not wait for the deadline of this one
+                    signposter.emitEvent("newWindowFrameCameToNothing", "window: \(id, privacy: .public)")
+                    entry.frame = nil
+                    entry.managed = now
+                    entry.needsLayout = true
+                    // An app that hasn't shown the window may be the reason. Then AeroSpace looks when it has
+                    look = look || entry.shown != nil
+                }
+            }
+            var reason: String?
+            if let frame = entry.frame {
+                if frame.answered != nil, isInPlace(info.bounds, frame.target) {
+                    reason = "in place"
+                } else if let answered = frame.answered, let shown = entry.shown, now - max(answered, shown) >= timing.refused {
+                    // WindowServer has the frame of a window only once its app has shown it, so not before that.
+                    // An app that sets a frame of its own while it shows the window (its default size, the place
+                    // next to its last window) takes the one of its tile right after: it's asked once more
+                    if entry.askedAgain {
+                        reason = "another frame"
+                    } else {
+                        signposter.emitEvent("newWindowAskedAgain", "window: \(id, privacy: .public)")
+                        entry.askedAgain = true
+                        entry.frame = nil
+                        entry.managed = now
+                        entry.needsLayout = true
+                        look = true
+                    }
+                } else if now - frame.asked >= timing.inPlace {
+                    reason = frame.answered == nil ? "no frame in time" : "not shown in time"
+                }
+            } else if let managed = entry.managed {
+                if now - managed >= timing.placed { reason = "no layout in time" }
+            } else if let shown = entry.shown {
+                if now - shown >= timing.managed { reason = "not managed in time" }
+            } else if now - entry.born >= timing.shown {
+                reason = "not shown in time"
+            }
+            if reason == nil, let shown = entry.shown, now - shown >= timing.unseen { reason = "unseen for too long" }
+            // Not again and again: whatever keeps the window from its frame may last
+            guard look, reason == nil, entry.looks < 3 else { return (reason, nil) }
+            entry.looks += 1
+            return (nil, entry.pid)
         }
-        if let reason {
-            leave(id, reason)
-        } else if let shown, now - shown >= timing.unseen {
-            leave(id, "unseen for too long")
-        }
+        if let look { lookAt(look) }
+        if let reason { leave(id, reason) }
     }
 
     private func leave(_ id: UInt32, _ reason: String) {
@@ -372,10 +465,15 @@ final class NewWindowCurtain: Sendable {
                 while !driver.isOnScreen(id) && ContinuousClock.now < deadline && driver.window(id) != nil { usleep(500) }
             }
             let now = clock()
-            state.withLock { state in
-                if state.windows.removeValue(forKey: id) != nil { state.left[id] = now }
+            let entry = state.withLock { state in
+                let entry = state.windows.removeValue(forKey: id)
+                if entry != nil { state.left[id] = now }
+                return entry
             }
             watch()
+            // It left as it was, and nothing else is going to start the layout that puts it into its tile, or that
+            // makes the other windows make room
+            if let entry, entry.needsLayout { lookAt(entry.pid) }
         }
     }
 
@@ -463,9 +561,10 @@ struct NewWindowCurtainTiming: Sendable {
     var placed: Duration = .milliseconds(200)
     /// From the request of the frame until WindowServer has it
     var inPlace: Duration = .milliseconds(250)
-    /// The app has answered the request, and WindowServer still has another frame: the app keeps its own
-    /// (e.g. a window that can't be that small)
-    var refused: Duration = .milliseconds(100)
+    /// The app has answered the request and shown its window, and WindowServer still has another frame. The app is
+    /// asked once more, and after this long again, it keeps its own frame (e.g. a window that can't be that small).
+    /// WindowServer had the frame of 140 new Ghostty windows 15 ms after that (the median), and 37 ms at the latest
+    var refused: Duration = .milliseconds(50)
     /// Whatever happens, a window that its app has shown isn't behind the curtain for longer than this
     var unseen: Duration = .milliseconds(450)
     /// A window that has left the curtain is on screen a few milliseconds later

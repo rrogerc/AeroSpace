@@ -12,6 +12,11 @@ final class EnhancedUserInterface {
     /// next refresh writes its frames again, with the attribute disabled
     private var wasDisabled = false
     private var askAfterBatch = false
+    /// The app had the attribute enabled at least once. Zen enables it by itself whenever it creates a window, and again
+    /// half a second after somebody has disabled it. With the question after the frames, the first frames of every
+    /// other new Zen window were animated: a quarter of a second in which the window is neither where its app put it
+    /// nor in its tile. So an app like that is asked before every batch
+    private var wasEverEnabled = false
     private let read: () -> AxAttributeResult<Bool>
     private let write: (Bool) -> AXError
 
@@ -20,10 +25,11 @@ final class EnhancedUserInterface {
         self.write = write
     }
 
-    func acquire() {
+    /// `askFirst`: these frames must not be animated, whatever the app answered the last time
+    func acquire(askFirst: Bool = false) {
         depth += 1
         guard depth == 1, !unsupported, !restore else { return }
-        if wasDisabled {
+        if wasDisabled && !wasEverEnabled && !askFirst {
             askAfterBatch = true
         } else {
             ask(disable: true)
@@ -41,8 +47,16 @@ final class EnhancedUserInterface {
         }
     }
 
-    func acquireForBatch() {
-        if depth == 0 { acquire() }
+    /// `askFirst` for the frame of a new window: it gets it unseen, and shows up when it has it (NewWindowCurtain). An
+    /// animation would show up instead
+    func acquireForBatch(askFirst: Bool = false) {
+        if depth == 0 {
+            acquire(askFirst: askFirst)
+        } else if askFirst && askAfterBatch {
+            // The batch began with frames that didn't have to wait for the answer
+            askAfterBatch = false
+            ask(disable: true)
+        }
     }
 
     func restoreIfNeeded() {
@@ -57,6 +71,7 @@ final class EnhancedUserInterface {
         wasDisabled = false
         switch read() {
             case .success(true):
+                wasEverEnabled = true
                 guard disable else { break }
                 let error = write(false)
                 if error == .success { restore = true }

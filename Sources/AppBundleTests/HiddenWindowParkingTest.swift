@@ -855,6 +855,47 @@ final class HiddenWindowParkingTest: XCTestCase {
         _ = await worker.stop(retry: false)
     }
 
+    func testNewWindowThatItsAppHasNotShownYetGetsItsFrame() async {
+        let driver = HiddenParkingTestDriver()
+        // AeroSpace found the window through its app, which hasn't shown it yet. It has no size, and WindowServer's
+        // list of windows doesn't say whose it is. The curtain knows
+        driver.mutate { $0.curtain = 300; $0.curtained = [30: 300]; $0.memberships[30] = [300] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let new = NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "1")
+        let plan = native(await worker.apply(windows() + [new], request: 1))
+        XCTAssertTrue(plan[30]?.1.isReady == true, "Without its frame, it shows up where its app put it")
+        XCTAssertEqual(driver.read { $0.memberships[30] }, [300])
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+
+        // Its app has shown it: nothing changes for it
+        driver.mutate { $0.owners[30] = 300 }
+        let shown = native(await worker.apply(windows() + [new], request: 2))
+        XCTAssertTrue(shown[30]?.1 === plan[30]?.1)
+
+        // The curtain doesn't make a window the window of another app
+        driver.mutate { $0.owners[31] = nil; $0.curtained[31] = 999; $0.memberships[31] = [300] }
+        let other = NativeVisibilityWindow(id: 31, pid: 300, visible: true, workspace: "1")
+        let wrong = native(await worker.apply(windows() + [new, other], request: 3))
+        XCTAssertFalse(wrong[31]?.1.isReady == true)
+        XCTAssertTrue(wrong[30]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testNewWindowWithoutSizeOfAHiddenWorkspaceGoesStraightToTheHiddenGroup() async throws {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.curtain = 300; $0.owners = [10: 100]; $0.curtained = [30: 300]; $0.memberships = [10: [1], 30: [300]] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let visible = NativeVisibilityWindow(id: 10, pid: 100, visible: true, workspace: "1")
+        let new = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "2")
+        let plan = native(await worker.apply([visible, new], request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 30: [group]])
+        XCTAssertEqual(driver.read { $0.leftCurtain }, [[30]])
+        XCTAssertFalse(plan[30]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
     func testNewWindowOfAHiddenWorkspaceGoesStraightToTheHiddenGroup() async throws {
         let driver = HiddenParkingTestDriver()
         // Nothing else is hidden: the hidden group is created for the new window
@@ -1162,6 +1203,8 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var calls: [String] = []
         /// The group of the new windows that nobody has seen yet: see NewWindowCurtain
         var curtain: UInt64?
+        /// Whose the windows behind the curtain are. `owners` doesn't have a window that its app hasn't shown yet
+        var curtained: [UInt32: Int32] = [:]
         var leftCurtain: [[UInt32]] = []
     }
 
@@ -1267,7 +1310,13 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     }
 
     func curtain() -> UInt64? { state.withLock { $0.curtain } }
-    func leftCurtain(_ ids: [UInt32]) { state.withLock { $0.leftCurtain.append(ids) } }
+    func curtained() -> [UInt32: Int32] { state.withLock { $0.curtained } }
+    func leftCurtain(_ ids: [UInt32]) {
+        state.withLock { state in
+            state.leftCurtain.append(ids)
+            for id in ids { state.curtained[id] = nil }
+        }
+    }
 
     func createSwapGroups(home: UInt64) -> WindowSwapGroups? {
         state.withLock { state in

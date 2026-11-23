@@ -33,7 +33,7 @@ final class NewWindowCurtainTest: XCTestCase {
         curtain.frame(10, job, tile)
         curtain.check()
         XCTAssertEqual(curtain.curtained, [10], "The app hasn't answered")
-        job.complete()
+        answer(curtain, 10, job)
         curtain.check()
         XCTAssertEqual(curtain.curtained, [10], "The app has answered, and WindowServer doesn't have the frame yet")
         XCTAssertTrue(driver.read { $0.shown.isEmpty })
@@ -53,7 +53,7 @@ final class NewWindowCurtainTest: XCTestCase {
         // The app answers AX before it shows its window
         let job = RunLoopJob(.cancellable)
         curtain.frame(10, job, tile)
-        job.complete()
+        answer(curtain, 10, job)
         driver.mutate { $0.windows[10]?.bounds = tile }
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) {
             driver.show(10, at: tile)
@@ -72,7 +72,7 @@ final class NewWindowCurtainTest: XCTestCase {
         driver.show(10, at: whereItsAppPutIt)
         let job = RunLoopJob(.cancellable)
         curtain.frame(10, job, tile)
-        job.complete()
+        answer(curtain, 10, job)
         // macOS scales a new window around its middle while it opens
         driver.mutate { $0.windows[10]?.bounds = tile.insetBy(dx: 7, dy: 8) }
         curtain.check()
@@ -97,7 +97,7 @@ final class NewWindowCurtainTest: XCTestCase {
     func testAeroSpaceLooksAtTheAppWhenItShowsAWindowThatIsNotManagedYet() {
         let driver = CurtainTestDriver()
         let looked = OSAllocatedUnfairLock(initialState: [Int32]())
-        let curtain = NewWindowCurtain(driver: driver, queue: nil, onShown: { pid in looked.withLock { $0.append(pid) } })
+        let curtain = NewWindowCurtain(driver: driver, queue: nil, lookAt: { pid in looked.withLock { $0.append(pid) } })
         curtain.activate(home: home)
         // An app that has just started: AeroSpace doesn't observe it yet
         driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal); $0.windows[11] = NewWindowInfo(pid: terminal) }
@@ -166,7 +166,7 @@ final class NewWindowCurtainTest: XCTestCase {
 
     func testNoCurtainWithoutAHome() {
         let driver = CurtainTestDriver()
-        let curtain = NewWindowCurtain(driver: driver, queue: nil, onShown: { _ in })
+        let curtain = NewWindowCurtain(driver: driver, queue: nil, lookAt: { _ in })
         driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
         curtain.windowEvent(born, 10)
         XCTAssertTrue(driver.read { $0.hidden.isEmpty })
@@ -204,11 +204,10 @@ final class NewWindowCurtainTest: XCTestCase {
                 driver.show(10, at: whereItsAppPutIt)
                 curtain.frame(10, RunLoopJob(.cancellable), tile)
             }),
-            ("its app keeps another frame", timing.refused, { curtain, driver in
-                driver.show(10, at: whereItsAppPutIt)
+            ("its app answers the frame request, and never shows the window", timing.inPlace, { curtain, _ in
                 let job = RunLoopJob(.cancellable)
                 curtain.frame(10, job, tile)
-                job.complete()
+                answer(curtain, 10, job)
             }),
         ]
         for (why, deadline, prepare) in steps {
@@ -263,7 +262,7 @@ final class NewWindowCurtainTest: XCTestCase {
         driver.mutate { $0.windows[10]?.bounds = tile }
         curtain.check()
         XCTAssertTrue(driver.read { $0.shown.isEmpty }, "The frame of the first layout isn't the tile anymore")
-        second.complete()
+        answer(curtain, 10, second)
         driver.mutate { $0.windows[10]?.bounds = smaller }
         curtain.check()
         XCTAssertEqual(driver.read { $0.shown }, [10])
@@ -330,7 +329,7 @@ final class NewWindowCurtainTest: XCTestCase {
     func testGroupThatCanNotBeCreatedIsNotTriedWithEveryLayout() {
         let driver = CurtainTestDriver()
         let clock = TestClock()
-        let curtain = NewWindowCurtain(driver: driver, clock: { clock.now }, queue: nil, onShown: { _ in })
+        let curtain = NewWindowCurtain(driver: driver, clock: { clock.now }, queue: nil, lookAt: { _ in })
         driver.mutate { $0.canCreateGroup = false }
         curtain.activate(home: home)
         driver.mutate { $0.canCreateGroup = true }
@@ -366,12 +365,12 @@ final class NewWindowCurtainTest: XCTestCase {
         driver.show(10, at: whereItsAppPutIt)
         let frame = RunLoopJob(.cancellable)
         curtain.frame(10, frame, tile)
-        frame.complete()
+        answer(curtain, 10, frame)
         driver.mutate { $0.windows[10]?.bounds = tile }
 
         let waited = OSAllocatedUnfairLock(initialState: false)
         let other = Thread {
-            curtain.wait(for: [10], RunLoopJob(.cancellable))
+            XCTAssertTrue(curtain.wait(for: [10], RunLoopJob(.cancellable)), "The new window is in its tile: the others make room")
             waited.withLock { $0 = true }
         }
         other.start()
@@ -390,22 +389,25 @@ final class NewWindowCurtainTest: XCTestCase {
     func testNobodyWaitsForAWindowThatIsNotBehindTheCurtain() {
         let (curtain, driver, _) = makeCurtain()
         let started = ContinuousClock.now
-        curtain.wait(for: [10], RunLoopJob(.cancellable))
+        XCTAssertTrue(curtain.wait(for: [10], RunLoopJob(.cancellable)))
         // A frame that is cancelled doesn't wait either
         driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
         curtain.windowEvent(born, 10)
-        curtain.wait(for: [10], RunLoopJob.cancelled)
+        curtain.frame(10, RunLoopJob(.cancellable), tile)
+        _ = curtain.wait(for: [10], RunLoopJob.cancelled)
         XCTAssertLessThan(started.duration(to: .now), .milliseconds(200))
     }
 
     func testWindowsThatMakeRoomDoNotWaitForever() {
         let driver = CurtainTestDriver()
-        let curtain = NewWindowCurtain(driver: driver, timing: NewWindowCurtainTiming(others: .milliseconds(30)), queue: nil, onShown: { _ in })
+        let curtain = NewWindowCurtain(driver: driver, timing: NewWindowCurtainTiming(others: .milliseconds(30)), queue: nil, lookAt: { _ in })
         curtain.activate(home: home)
         driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
         curtain.windowEvent(born, 10)
+        // Its app doesn't answer
+        curtain.frame(10, RunLoopJob(.cancellable), tile)
         let started = ContinuousClock.now
-        curtain.wait(for: [10], RunLoopJob(.cancellable))
+        XCTAssertTrue(curtain.wait(for: [10], RunLoopJob(.cancellable)), "Then they make room for a window that isn't there")
         XCTAssertGreaterThanOrEqual(started.duration(to: .now), .milliseconds(30))
         XCTAssertLessThan(started.duration(to: .now), .seconds(2))
     }
@@ -439,7 +441,7 @@ final class NewWindowCurtainTest: XCTestCase {
         driver.show(10, at: whereItsAppPutIt)
         let first = RunLoopJob(.cancellable)
         curtain.frame(10, first, tile)
-        first.complete()
+        answer(curtain, 10, first)
         curtain.check()
         // The app has answered the first request, and keeps its frame for now. Then another layout asks again
         let second = RunLoopJob(.cancellable)
@@ -447,10 +449,200 @@ final class NewWindowCurtainTest: XCTestCase {
         clock.advance(NewWindowCurtainTiming().refused)
         curtain.check()
         XCTAssertTrue(driver.read { $0.shown.isEmpty }, "The app hasn't answered the second request yet")
-        second.complete()
+        XCTAssertFalse(curtain.hasManagedWindowWithoutFrame, "And nobody has to ask a third time")
+        answer(curtain, 10, second)
         driver.mutate { $0.windows[10]?.bounds = tile }
         curtain.check()
         XCTAssertEqual(driver.read { $0.shown }, [10])
+    }
+
+    func testFrameThatNobodyAskedForIsNoFrame() {
+        let (curtain, driver, clock, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        // AeroSpace finds the window through its app, before the app has shown it. The job of its frame ends
+        // without asking the app (the window wasn't ready for a frame)
+        curtain.manages(10)
+        let dropped = RunLoopJob(.cancellable)
+        curtain.frame(10, dropped, tile)
+        XCTAssertFalse(curtain.hasManagedWindowWithoutFrame)
+        dropped.complete()
+        curtain.check()
+        XCTAssertTrue(curtain.hasManagedWindowWithoutFrame, "The next layout asks for the frame right away")
+        XCTAssertTrue(looked.withLock { $0.isEmpty }, "Its app hasn't shown it: looking now wouldn't change anything")
+        XCTAssertFalse(curtain.wait(for: [10], RunLoopJob(.cancellable)), "Nobody makes room for a window without a frame")
+
+        // Its app shows it. The window doesn't wait until a deadline shows it where its app put it
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.windowEvent(orderedIn, 10)
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+        clock.advance(NewWindowCurtainTiming().refused * 2)
+        curtain.check()
+        XCTAssertEqual(curtain.curtained, [10], "Nobody asked its app: that's not an app that keeps another frame")
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+
+        let job = RunLoopJob(.cancellable)
+        curtain.frame(10, job, tile)
+        XCTAssertFalse(curtain.hasManagedWindowWithoutFrame)
+        answer(curtain, 10, job)
+        driver.mutate { $0.windows[10]?.bounds = tile }
+        curtain.check()
+        XCTAssertEqual(driver.read { $0.shown }, [10])
+        XCTAssertEqual(looked.withLock { $0 }, [terminal], "It's in its tile: nothing is left to look at")
+    }
+
+    func testFrameOfAShownWindowThatNobodyAskedForIsAskedForAtOnce() {
+        let (curtain, driver, _, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        curtain.manages(10)
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.windowEvent(orderedIn, 10)
+        XCTAssertTrue(looked.withLock { $0.isEmpty }, "AeroSpace manages it, and its layout is on the way")
+        // A command came in between: the job of the frame was cancelled before it asked
+        let job = RunLoopJob(.cancellable)
+        curtain.frame(10, job, tile)
+        job.cancel()
+        job.complete()
+        curtain.check()
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+        XCTAssertEqual(curtain.appsWithoutFrame, [terminal], "And the refresh doesn't wait for more events")
+    }
+
+    func testAeroSpaceIsNotToldToLookAgainAndAgain() {
+        let (curtain, driver, _, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.windowEvent(orderedIn, 10)
+        XCTAssertEqual(looked.withLock { $0 }, [terminal], "It isn't managed yet")
+        // Whatever keeps the jobs from asking, it lasts
+        for _ in 0 ..< 5 {
+            let job = RunLoopJob(.cancellable)
+            curtain.frame(10, job, tile)
+            job.complete()
+            curtain.check()
+        }
+        XCTAssertEqual(looked.withLock { $0 }, [terminal, terminal, terminal])
+        XCTAssertEqual(curtain.curtained, [10])
+    }
+
+    func testWindowIsNotJudgedBeforeItsAppHasShownIt() {
+        let timing = NewWindowCurtainTiming()
+        let (curtain, driver, clock, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        curtain.manages(10)
+        // The app answers before it shows the window. WindowServer has no frame at all for the window until then
+        let job = RunLoopJob(.cancellable)
+        curtain.frame(10, job, tile)
+        answer(curtain, 10, job)
+        curtain.check()
+        clock.advance(timing.refused * 3)
+        curtain.check()
+        XCTAssertEqual(curtain.curtained, [10])
+        XCTAssertTrue(looked.withLock { $0.isEmpty }, "That's not an app that keeps another frame")
+        XCTAssertFalse(curtain.hasManagedWindowWithoutFrame)
+
+        // It shows the window, and WindowServer gets the frame a moment later
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.windowEvent(orderedIn, 10)
+        clock.advance(timing.refused - .milliseconds(5))
+        curtain.check()
+        XCTAssertEqual(curtain.curtained, [10])
+        XCTAssertTrue(looked.withLock { $0.isEmpty })
+        driver.mutate { $0.windows[10]?.bounds = tile }
+        curtain.check()
+        XCTAssertEqual(driver.read { $0.shown }, [10])
+    }
+
+    func testAppThatHasAnotherFrameIsAskedOnceMore() {
+        let timing = NewWindowCurtainTiming()
+        let (curtain, driver, clock, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        curtain.manages(10)
+        // The app answers, and then shows the window with a frame of its own (its default size)
+        let first = RunLoopJob(.cancellable)
+        curtain.frame(10, first, tile)
+        answer(curtain, 10, first)
+        curtain.check()
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.windowEvent(orderedIn, 10)
+        clock.advance(timing.refused - .milliseconds(5))
+        curtain.check()
+        XCTAssertTrue(looked.withLock { $0.isEmpty }, "WindowServer may get the frame any moment")
+        clock.advance(.milliseconds(5))
+        curtain.check()
+        XCTAssertEqual(curtain.curtained, [10], "Nobody has seen it where its app put it")
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+        XCTAssertTrue(curtain.hasManagedWindowWithoutFrame)
+        XCTAssertFalse(curtain.wait(for: [10], RunLoopJob(.cancellable)), "The windows of the first layout don't make room yet")
+
+        // The second request finds the window as its app left it, and the app takes the frame
+        let second = RunLoopJob(.cancellable)
+        curtain.frame(10, second, tile)
+        answer(curtain, 10, second)
+        driver.mutate { $0.windows[10]?.bounds = tile }
+        curtain.check()
+        XCTAssertEqual(driver.read { $0.shown }, [10])
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+    }
+
+    func testAppThatKeepsAnotherFrameShowsItsWindowAsItIs() {
+        let timing = NewWindowCurtainTiming()
+        let (curtain, driver, clock, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.manages(10)
+        // A window that can't be as small as its tile
+        for attempt in 1 ... 2 {
+            let job = RunLoopJob(.cancellable)
+            curtain.frame(10, job, tile)
+            answer(curtain, 10, job)
+            curtain.check()
+            clock.advance(timing.refused - .milliseconds(5))
+            curtain.check()
+            XCTAssertTrue(driver.read { $0.shown.isEmpty }, "Request \(attempt)")
+            clock.advance(.milliseconds(5))
+            curtain.check()
+        }
+        XCTAssertEqual(driver.read { $0.shown }, [10], "It was asked twice, and not a third time")
+        XCTAssertEqual(looked.withLock { $0 }, [terminal])
+    }
+
+    func testWindowThatLeavesWithoutItsFrameIsLaidOutAfterThat() {
+        let (curtain, driver, clock, looked) = makeCurtainThatLooks()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal); $0.windows[11] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        driver.show(10, at: whereItsAppPutIt)
+        curtain.manages(10)
+        curtain.check()
+        // A layout didn't ask for its frame, so the other windows of that layout didn't make room
+        XCTAssertFalse(curtain.wait(for: [10], RunLoopJob(.cancellable)))
+        XCTAssertTrue(looked.withLock { $0.isEmpty })
+        // And no other layout came. It shows up where its app put it, on top of the others
+        clock.advance(NewWindowCurtainTiming().placed)
+        curtain.check()
+        XCTAssertEqual(driver.read { $0.shown }, [10])
+        XCTAssertEqual(looked.withLock { $0 }, [terminal], "Now a layout puts it into its tile, and the others make room")
+
+        // The same for a window that is gone, or parked with a hidden workspace
+        curtain.windowEvent(born, 11)
+        curtain.manages(11)
+        XCTAssertFalse(curtain.wait(for: [11], RunLoopJob(.cancellable)))
+        curtain.forget([11])
+        XCTAssertEqual(looked.withLock { $0 }, [terminal, terminal])
+    }
+
+    func testCurtainKnowsWhoseAWindowIsBeforeItHasASize() {
+        let (curtain, driver, _) = makeCurtain()
+        driver.mutate { $0.windows[10] = NewWindowInfo(pid: terminal) }
+        curtain.windowEvent(born, 10)
+        XCTAssertEqual(curtain.owners, [10: terminal])
+        curtain.forget([10])
+        XCTAssertTrue(curtain.owners.isEmpty)
     }
 
     func testGroupThatCouldNotBeRemovedIsRemovedLater() {
@@ -466,11 +658,24 @@ final class NewWindowCurtainTest: XCTestCase {
 }
 
 private func makeCurtain() -> (NewWindowCurtain, CurtainTestDriver, TestClock) {
+    let (curtain, driver, clock, _) = makeCurtainThatLooks()
+    return (curtain, driver, clock)
+}
+
+/// The last value has the apps that AeroSpace was told to look at
+private func makeCurtainThatLooks() -> (NewWindowCurtain, CurtainTestDriver, TestClock, OSAllocatedUnfairLock<[Int32]>) {
     let driver = CurtainTestDriver()
     let clock = TestClock()
-    let curtain = NewWindowCurtain(driver: driver, clock: { clock.now }, queue: nil, onShown: { _ in })
+    let looked = OSAllocatedUnfairLock(initialState: [Int32]())
+    let curtain = NewWindowCurtain(driver: driver, clock: { clock.now }, queue: nil, lookAt: { pid in looked.withLock { $0.append(pid) } })
     curtain.activate(home: home)
-    return (curtain, driver, clock)
+    return (curtain, driver, clock, looked)
+}
+
+/// The job of a frame asks the app, and the app answers
+private func answer(_ curtain: NewWindowCurtain, _ id: UInt32, _ job: RunLoopJob) {
+    curtain.asking(id, job)
+    job.complete()
 }
 
 private final class TestClock: Sendable {

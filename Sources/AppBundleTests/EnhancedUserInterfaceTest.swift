@@ -55,6 +55,61 @@ final class EnhancedUserInterfaceTest: XCTestCase {
         XCTAssertEqual(events, ["frames", "read", "read", "write false", "frames", "write true"])
     }
 
+    /// Zen enables the attribute by itself: whenever it creates a window, and half a second after somebody disabled
+    /// it. And it says "not implemented" when it's disabled, although it does what it's asked
+    func testAppThatEnablesTheAttributeAgainAndAgainIsAskedBeforeEveryBatch() {
+        var enabled = true
+        var events: [String] = []
+        let ui = EnhancedUserInterface(read: { events.append("read \(enabled)"); return .success(enabled) }, write: {
+            events.append("write \($0)")
+            enabled = $0
+            return .notImplemented
+        })
+        // A new window: its frames, and the frames of the layout that follows 100 ms later
+        for _ in 0 ..< 2 {
+            ui.acquireForBatch()
+            events.append("frames")
+            ui.release()
+        }
+        XCTAssertEqual(events, ["read true", "write false", "frames", "read false", "frames"])
+        // The next new window. The answer was false the last time, and it's not the answer anymore
+        enabled = true
+        events = []
+        ui.acquireForBatch()
+        events.append("frames")
+        ui.release()
+        XCTAssertEqual(events, ["read true", "write false", "frames"], "Asked after the frames, they were animated")
+    }
+
+    func testFramesOfANewWindowWaitForTheAnswerWhateverItWasLastTime() {
+        var enabled = false
+        var events: [String] = []
+        let ui = EnhancedUserInterface(read: { events.append("read"); return .success(enabled) }, write: { events.append("write \($0)"); return .success })
+        ui.acquire()
+        ui.release()
+        // The app never had the attribute enabled, as far as anybody knows. It has now
+        enabled = true
+        events = []
+        ui.acquireForBatch(askFirst: true)
+        events.append("frames")
+        ui.release()
+        XCTAssertEqual(events, ["read", "write false", "frames", "write true"])
+
+        // The same in a batch that began with the frame of another window
+        let other = EnhancedUserInterface(read: { events.append("read"); return .success(enabled) }, write: { events.append("write \($0)"); return .success })
+        enabled = false
+        other.acquire()
+        other.release()
+        enabled = true
+        events = []
+        other.acquireForBatch()
+        events.append("frames of another window")
+        other.acquireForBatch(askFirst: true)
+        events.append("frames of the new window")
+        other.release()
+        XCTAssertEqual(events, ["frames of another window", "read", "write false", "frames of the new window", "write true"])
+    }
+
     func testFailedAnswerAfterTheBatchIsNotTakenForFalse() {
         var answers: [AxAttributeResult<Bool>] = [.success(false), .failure(.cannotComplete), .success(false)]
         var events: [String] = []

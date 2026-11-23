@@ -237,10 +237,16 @@ final class MacApp: AbstractApp {
         let screens = monitorInfos.map { CGRect(x: $0.rect.topLeftX, y: $0.rect.topLeftY, width: $0.rect.width, height: $0.rect.height) }
         // A new window shows up in its tile before the windows that make room for it change: see NewWindowCurtain
         let newWindows = newWindowsToShowFirst
-        let job = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
+        // The curtain knows of the frame before the job can say that it's asking the app for it
+        let job = RunLoopJob(.cancellable)
+        if let topLeft = frame.topLeft, let size = frame.size {
+            NewWindowCurtain.shared.frame(windowId, job, CGRect(origin: topLeft, size: size))
+        }
+        let submitted = withWindowAsync(windowId, .cancellable, suppressAnimations: true, job: job) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }
             if !newWindows.isEmpty {
-                NewWindowCurtain.shared.wait(for: newWindows, job)
+                // This layout doesn't get a new window into its tile, so nobody makes room for it yet
+                guard NewWindowCurtain.shared.wait(for: newWindows, job) else { return }
                 try job.checkCancellation()
             }
             if afterReveals {
@@ -253,17 +259,21 @@ final class MacApp: AbstractApp {
             // can wait behind app activation and delay hiding the outgoing window.
             let bounds = frame.size == nil ? nil : getWindowServerWindow(windowId, pid: pid)?.bounds
             let update = frame.skippingUnchangedValues(comparedTo: bounds)
-            if update.isEmpty { return }
+            if update.isEmpty {
+                NewWindowCurtain.shared.asking(windowId, job)
+                return
+            }
             try job.checkCancellation()
-            enhancedUserInterface.threadGuarded.acquireForBatch()
+            // A new window gets its frame unseen, and shows up when it has it: that one must not be animated
+            enhancedUserInterface.threadGuarded.acquireForBatch(askFirst: NewWindowCurtain.shared.isBehind(windowId))
             try job.checkCancellation()
             let moveFirst = bounds.map { update.movesFirst(from: $0, screens: screens) } ?? false
+            NewWindowCurtain.shared.asking(windowId, job)
             try setFrame(window, update.topLeft, update.size, moveFirst: moveFirst, job)
         }
-        setFrameJobs[windowId] = job
-        if let topLeft = frame.topLeft, let size = frame.size {
-            NewWindowCurtain.shared.frame(windowId, job, CGRect(origin: topLeft, size: size))
-        }
+        // The app is gone, and nobody is going to ask it
+        if submitted !== job { job.complete() }
+        setFrameJobs[windowId] = submitted
     }
 
     func hasPendingFrame(_ windowId: UInt32) -> Bool {

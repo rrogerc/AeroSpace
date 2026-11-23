@@ -25,6 +25,8 @@ protocol HiddenWindowParkingDriver: Sendable {
     func settle(reveal: [UInt32], hide: [UInt32], parking: WorkspaceVisibilityGroup, swap: WindowSwapGroups, home: UInt64) -> Bool
     /// The group of the new windows that nobody has seen yet: see NewWindowCurtain. nil if there's none
     func curtain() -> UInt64?
+    /// The windows behind the curtain, and whose they are
+    func curtained() -> [UInt32: Int32]
     /// New windows went from the curtain straight to the hidden group
     func leftCurtain(_ ids: [UInt32])
 }
@@ -124,6 +126,7 @@ struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
     }
 
     func curtain() -> UInt64? { NewWindowCurtain.shared.group }
+    func curtained() -> [UInt32: Int32] { NewWindowCurtain.shared.owners }
     func leftCurtain(_ ids: [UInt32]) { NewWindowCurtain.shared.forget(ids) }
 
     private func numbers(_ ids: [UInt32]) -> CFArray { ids.map { NSNumber(value: $0) } as CFArray }
@@ -262,7 +265,7 @@ actor HiddenWindowParkingWorker {
             return currentPlan
         }
         let requested = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
-        guard var owners = driver.owners(Array(Set(windows.map(\.id) + Array(entries.keys)))) else {
+        guard var owners = findOwners(Array(Set(windows.map(\.id) + Array(entries.keys)))) else {
             beginRecovery(clearHome: false)
             return currentPlan
         }
@@ -372,7 +375,7 @@ actor HiddenWindowParkingWorker {
                 beginRecovery(clearHome: false, restartDelay: .zero)
                 return currentPlan
             }
-            guard let observedOwners = driver.owners(windows.map(\.id)) else {
+            guard let observedOwners = findOwners(windows.map(\.id)) else {
                 beginRecovery(clearHome: false)
                 return currentPlan
             }
@@ -405,6 +408,20 @@ actor HiddenWindowParkingWorker {
         entries = next
         validated = true
         return .native(entries.mapValues { ($0.window.pid, $0.gate) })
+    }
+
+    /// AeroSpace finds a new window through its app before the app has shown it, in every third new terminal window:
+    /// the app answers AX as soon as the window is its key window, 10 to 15 ms before WindowServer has it on screen.
+    /// Such a window has no size yet, and WindowServer's list of windows (CGWindowList) has no record to go by for
+    /// it. Without an owner it wasn't ready for its frame, the layout that found it asked for nothing, and the window
+    /// showed up where its app put it. It's behind the curtain, which knows whose it is since it was created
+    private func findOwners(_ ids: [UInt32]) -> [UInt32: Int32]? {
+        guard var owners = driver.owners(ids) else { return nil }
+        let curtained = driver.curtained()
+        if !curtained.isEmpty {
+            for id in ids where owners[id] == nil { owners[id] = curtained[id] }
+        }
+        return owners
     }
 
     /// The returned request is nil if there's no answer of the app to wait for
