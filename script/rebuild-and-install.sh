@@ -11,22 +11,22 @@
 #     git fetch upstream && git rebase upstream/main   # resolve any conflicts, then run this
 #
 # Usage:
-#     ./rebuild-and-install.sh            build + install + restart
-#     ./rebuild-and-install.sh --check    validate environment only (no build), then exit
+#     ./script/rebuild-and-install.sh            build + install + restart
+#     ./script/rebuild-and-install.sh --check    validate environment only (no build), then exit
 #
 # Override install locations with env vars if you ever need to:
 #     APP_DEST (default /Applications/AeroSpace.app)  CLI_DEST (default ~/.local/bin/aerospace)
 
 set -euo pipefail
 
-# Resolve this script's real directory (the repo root), even when invoked via a symlink in ~/.local/bin.
+# Go to the repo root (the parent of this script's real directory), even when invoked via a symlink in ~/.local/bin.
 source="${BASH_SOURCE[0]}"
 while [ -L "$source" ]; do
     dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
     source="$(readlink "$source")"
     [[ "$source" != /* ]] && source="$dir/$source"
 done
-cd "$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+cd "$(cd -P "$(dirname "$source")/.." >/dev/null 2>&1 && pwd)"
 
 APP_DEST="${APP_DEST:-/Applications/AeroSpace.app}"
 CLI_DEST="${CLI_DEST:-$HOME/.local/bin/aerospace}"

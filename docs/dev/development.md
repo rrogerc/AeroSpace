@@ -41,7 +41,7 @@ If you only plan to build the debug version of AeroSpace, you can run it from th
 
 **Release build**
 -   `script/build-release.sh` - Build release build to `.release` dir by using Xcode.
--   `rebuild-and-install.sh` - Build release build from sources, install it, and restart AeroSpace.
+-   `script/rebuild-and-install.sh` - Build release build from sources, install it, and restart AeroSpace.
 
 ## IDE
 
@@ -69,4 +69,3 @@ Even if you use LSP and another text editor, Xcode is still useful to attach deb
 
 - Use built-in "Accessibility Inspector.app" to inspect accessibility properties of windows
 - Use [DeskPad](https://github.com/Stengo/DeskPad) or [BetterDisplay 2](https://github.com/waydabber/BetterDisplay) to emulate several monitors
-- You can use `script/clean-project.sh` to clean the project when something goes wrong.

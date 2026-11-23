@@ -62,7 +62,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   `MoveNodeToWorkspaceCommand.swift`, and `OrderedJson.swift` + `parseConfig.swift` (decimal numbers in the config).
   Docs: the "Dwindle layout" section of `docs/guide.adoc`, `docs/aerospace-dwindle.adoc`.
   Tests: `DwindleTest`, `DwindleCommandTest`, `DwindleMoveFocusTest`, `ConfigTest.testParseDwindle`.
-- **`rebuild-and-install.sh`** — the build/install helper described below.
+- **`script/rebuild-and-install.sh`** — the build/install helper described below.
 - **Hidden native window parking** — `enable-native-window-hiding = true` parks inactive windows in a never-shown,
   connection-owned WindowServer group, with SIP enabled and no extra normal macOS desktop. Revealed windows return
   exclusively to the original desktop before public focus/AX frame operations. Currently supports one monitor;
@@ -321,15 +321,16 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   casks. Three changes:
   - Deleted, because only upstream's own project needs it: `.github/` (CI, issue and PR templates, funding),
     `CONTRIBUTING.md`, `install-from-sources.sh` (the brew cask install), `script/publish-release.sh`, `makefile`,
-    and the scripts that run the debug build (`run-cli.sh`, `run-debug.sh`,
-    `script/reset-accessibility-permission-for-debug.sh`).
+    the scripts that run the debug build (`run-cli.sh`, `run-debug.sh`,
+    `script/reset-accessibility-permission-for-debug.sh`), and `script/clean-project.sh` with
+    `script/clean-xcode.sh` (the first one runs `git clean -ffxd`, which deletes `.local` too).
   - The release build makes only what gets installed: the app and the CLI. The website, the man pages, the shell
     completion, the zip and the brew casks are gone, and with them `build-docs.sh`, `build-shell-completion.sh`,
     `script/build-brew-cask.sh`, `Gemfile`, `.bundle/`, `grammar/`, and the Ruby and Rust that they needed. `docs/`
     stays: `script/generate.sh` makes the help texts of the CLI from `docs/aerospace-*.adoc`. Nothing renders
     `docs/` to HTML or man pages any more, so nothing checks its AsciiDoc syntax either.
-  - Moved: every script but `rebuild-and-install.sh` is in `script/` (`build-release.sh`, `build-debug.sh`,
-    `test.sh`, `swift-test.sh`, `lint.sh`, `format.sh`, `generate.sh`), `axDumps/` is
+  - Moved: every script is in `script/` (`build-release.sh`, `build-debug.sh`, `test.sh`, `swift-test.sh`,
+    `lint.sh`, `format.sh`, `generate.sh`, and this fork's `rebuild-and-install.sh`), `axDumps/` is
     `Sources/AppBundleTests/axDumps/` (excluded from the test target in `Package.swift`), `resources/` is
     `xcode/resources/` (only the Xcode build reads it), `dev-docs/` is `docs/dev/`, and `legal/` is `docs/legal/`.
 
@@ -343,8 +344,8 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
 ## Rebuild, install, and restart — one command
 
 ```bash
-./rebuild-and-install.sh          # build + install + restart
-./rebuild-and-install.sh --check  # validate environment only, no build
+./script/rebuild-and-install.sh          # build + install + restart
+./script/rebuild-and-install.sh --check  # validate environment only, no build
 ```
 
 (Also runnable as `aerospace-rebuild` — `~/.local/bin/aerospace-rebuild` is a symlink to this script.)
@@ -363,7 +364,7 @@ The script deliberately does **not** rebase (conflicts need a human). The full u
 
 ```bash
 git fetch upstream && git rebase upstream/main   # resolve any conflicts (usually FullscreenCmdArgs.swift)
-./rebuild-and-install.sh
+./script/rebuild-and-install.sh
 git push --force-with-lease origin main          # update the fork (rebase rewrites history)
 ```
 
@@ -386,7 +387,7 @@ git push --force-with-lease origin main          # update the fork (rebase rewri
 ## Conventions
 
 - Scripts live in `script/` and start with `cd "$(dirname "$0")/.."`, so all of them run from the repo root and
-  call each other as `./script/<name>.sh`. Only `rebuild-and-install.sh` is at the root, where the
-  `aerospace-rebuild` symlink points. `script/setup.sh` nukes `PATH` to `.deps/bin:/bin:/usr/bin` and wraps
+  call each other as `./script/<name>.sh`. `rebuild-and-install.sh` first follows the symlink that it's run
+  through (`aerospace-rebuild`). `script/setup.sh` nukes `PATH` to `.deps/bin:/bin:/usr/bin` and wraps
   optional tools resolved via `which` at source time, so a tool has to be on `PATH` *before* a script is invoked.
 - See `docs/dev/development.md` for upstream's notes on dependencies, the codesign certificate, and Xcode.
