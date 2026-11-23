@@ -210,6 +210,11 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Tests: `HiddenWindowParkingTest.testWindowsOfTwoWorkspacesChangePlacesInOneTransaction` with the nine tests after
   it.
 
+- **No sponsorship item in the tray menu**: upstream's "Sponsor AeroSpace on GitHub" button and its rotating
+  messages are gone (`Sources/AppBundle/ui/MenuBar.swift`, `Sources/AppBundle/ui/TrayMenuModel.swift`, and the
+  deleted `Sources/Common/model/sponsorshipPrompts.swift`). If upstream changes the prompts, a rebase conflicts on
+  the deleted file: keep it deleted.
+
 ## Rebuild, install, and restart — one command
 
 ```bash
