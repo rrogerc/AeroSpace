@@ -116,7 +116,9 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
     `runLightSession` that used to turn it on only scopes the refresh now, and is called `isWorkspaceSwitch`.
   - `AXEnhancedUserInterface` is read after the frames of a batch if the app's last answer was false, not before them
     (`Sources/AppBundle/EnhancedUserInterface.swift`). If another client has enabled it meanwhile, that one batch may
-    animate, and the layout of the next refresh writes the frames again with the attribute disabled.
+    animate, and the layout of the next refresh writes the frames again with the attribute disabled. Two exceptions
+    are asked first: an app that had the attribute enabled once (Zen enables it by itself, see "New windows show up
+    in their tile"), and the frame of a new window behind the curtain.
   - Frames are written on whole points (`WindowFrameUpdate.onWholePoints` in `Sources/AppBundle/windowServer.swift`,
     applied in `MacApp.setAxFrame`). On a monitor 2048 points wide, two tiles are 1004.5 points wide each. AppKit
     rounds such a frame its own way (even the same width up or down, depending on the frame before it), so the window
@@ -245,6 +247,39 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   the tree, before it asks the app its other questions (`isAboutToPlaceNewWindow` and `placesNewWindow` in
   `refresh.swift`). The tray gets its text after the layout.
 
+  That early, AeroSpace finds the window before its app has shown it, in every third new Ghostty window: the app
+  answers AX as soon as the window is its key window, 10 to 15 ms before WindowServer has it on screen. Until then the
+  window has no size, and CGWindowList has no record to go by for it. `HiddenWindowParkingWorker` takes the owner of
+  a window from that list, so it didn't know whose the window was, and cancelled the job of its frame. Nobody asked
+  the app, the windows that make room waited for the new one on the AX thread that the next layout needed, and
+  100 ms later the window showed up where its app put it: of 11 windows opened with Cmd+N, 3 flashed like before.
+  (None of the windows of the first measurements did. They were opened through AppleScript, and filmed by a probe
+  that keeps WindowServer busy: AeroSpace asked for the frame 55 to 87 ms after the birth of a window then, and it
+  asks after 22 to 60 ms when a key is pressed and nothing else runs.) Four things keep a frame from getting lost
+  now:
+  - The curtain says whose its windows are (`findOwners` in `HiddenWindowParking.swift`, `NewWindowCurtain.owners`).
+    The window is asked for its frame at once, and its app shows it with that frame, or takes it right after.
+  - The job of a frame tells the curtain when it gets as far as asking the app (`NewWindowCurtain.asking`, called
+    from `MacApp.setAxFrame`). A job that ends without it leaves no frame behind: the next layout asks right away,
+    and if nothing else starts one, the curtain does (`lookAt`: a refresh of the app).
+  - The other windows don't wait for a new window that has no frame coming (`NewWindowCurtain.wait` returns false).
+    They keep their frames, and make room with the layout that places the new window, or with the one after it
+    has left the curtain as it is.
+  - WindowServer has the frame of a window only once its app has shown it, so that's when the curtain starts to
+    judge it. If the app has answered and shown the window, and WindowServer has another frame 50 ms later, the app
+    is asked once more: an app that sets a frame of its own while it shows a window takes the second one. If it
+    has another frame 50 ms after that as well, the window shows up as it is (it can't be that small).
+
+  And the frame of a new window is never animated. With `AXEnhancedUserInterface` enabled, AppKit animates a frame
+  that comes through AX, for a quarter of a second, and Zen enables the attribute by itself: whenever it creates a
+  window, and again half a second after somebody has disabled it (it also answers "not implemented" to the request
+  that disables it, and does it). AeroSpace asked for the attribute after the frames if the last answer was false,
+  and the layout that follows a new window by 100 ms got that answer every time. So the first frames of the next
+  new Zen window were animated, unless a window was closed in between: the third of three windows opened in a row
+  left the curtain halfway between where Zen put it and its tile. Now an app that had the attribute enabled once is
+  asked before every batch, and so is every app before the frame of a window behind the curtain
+  (`EnhancedUserInterface.acquireForBatch(askFirst:)`, `wasEverEnabled`).
+
   Only with `enable-native-window-hiding`, and not for a window that is created while a mouse button is down (a tab
   that is dragged out follows the pointer). `AEROSPACE_NEW_WINDOW_CURTAIN=0` in the environment of AeroSpace turns it
   off. Also touches `Sources/AppBundle/NativeWorkspaceVisibility.swift` (the curtain exists while windows are
@@ -258,12 +293,24 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   in its tile after 138 ms, settled after 195. So nothing shows up later than it did: only the frames in between
   are gone. New Zen windows and the windows of a plain AppKit app show up in their tile as well. A dialog leaves
   the curtain 7 to 13 ms after its app shows it, and sheets, popovers and menus before that or within 4 ms.
+  With real key presses (`keys.py` in `.local/new-window-flash/`: Cmd+N through the event tap of the keyboard, only
+  while nobody uses the machine, and with nothing else running): before the four changes, 5 of 10 windows left the
+  curtain without their frame. After them, 182 of 182 were in their tile when they left it, 45 to 116 ms after their
+  birth, and 16 of those were asked before their app had shown them. None of the 36 that were filmed was outside of
+  its tile in a frame, and WindowServer, asked 500 times a second about 75 more, never had one on the desktop where
+  its app had put it (fifteen of them were opened three or four a second, each splitting the one before it). Zen,
+  with Cmd+N as well: 13 of 14 windows in their tile when they left the curtain, also three and four in a row, and
+  the fourteenth can't be as low as its tile (Zen windows are 495 points high at the least). A test app that gives its window its own frame back after the first request is asked again,
+  and its window shows up in its tile. One whose windows can't be as narrow as their tile gets two requests of
+  50 ms each (it used to be one of 100 ms), and shows its window as it is 160 ms after its birth.
   What's left: an app that doesn't answer AX within 150 ms of showing its window (it shows up where its app put it,
-  as before), a window that its app creates more than 5 s before it shows it, and the apps that show a window
-  within a few milliseconds of creating it (Zen: 4 to 6 ms after the curtain, and never seen so far).
+  as before), an app that gives a window another frame after it has left the curtain, a window that its app creates
+  more than 5 s before it shows it, and the apps that show a window within a few milliseconds of creating it (Zen:
+  4 to 6 ms after the curtain, and never seen so far).
   Everything that was measured is in "New windows in their tile" in `dev-docs/native-window-hiding.md`.
-  Tests: `NewWindowCurtainTest`, and `HiddenWindowParkingTest.testNewWindowBehindTheCurtainGetsItsFrameLikeAWindowOnTheDesktop`
-  with the two tests after it.
+  Tests: `NewWindowCurtainTest`, `HiddenWindowParkingTest.testNewWindowBehindTheCurtainGetsItsFrameLikeAWindowOnTheDesktop`
+  with the four tests after it, and `EnhancedUserInterfaceTest.testAppThatEnablesTheAttributeAgainAndAgainIsAskedBeforeEveryBatch`
+  with the test after it.
 
 - **No sponsorship item in the tray menu**: upstream's "Sponsor AeroSpace on GitHub" button and its rotating
   messages are gone (`Sources/AppBundle/ui/MenuBar.swift`, `Sources/AppBundle/ui/TrayMenuModel.swift`, and the

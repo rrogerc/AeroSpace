@@ -649,7 +649,8 @@ tile. Same machine as above: macOS 26.5.1 (25F80), one Studio Display at 60 Hz, 
 
 Cmd+N in Ghostty, next to another Ghostty window that has the workspace to itself. Ghostty gives the new window the
 size of the old one, so for six frames the screen was the new window. On build `4907eb17`, in ms after WindowServer
-knew the window (new windows through AppleScript, which does what Cmd+N does):
+knew the window (new windows through AppleScript, which does what Cmd+N does, only later: see "The frame that
+nobody asked for" below):
 
 | | ms |
 | --- | ---: |
@@ -756,10 +757,158 @@ Other windows, on the same build or on the first one of the change:
 - **Windows that are never shown**: a regular app creates four of them when it starts. They left the curtain when
   their deadline passed, and nobody saw the difference.
 
+### The frame that nobody asked for
+
+On the installed build (`c2bbc723`), one new Ghostty window in three still covered the workspace for a moment. The
+log of AeroSpace keeps its signposts for about ten minutes (`log show --signpost --info`), and had the eleven
+windows that were opened by hand: three left the curtain with "another frame", where their app had put them. All
+three the same way, in ms after the window joined the curtain:
+
+| | ms |
+| --- | ---: |
+| Ghostty posts its AX notification. The refresh starts (it doesn't wait anymore) | 3 to 4 |
+| Ghostty answers `AXFocusedWindow` with the new window, 8 to 13 ms after the question | 14 to 18 |
+| WindowServer has no frame for it (`observeWindowFrame`), so position and size are read through AX | 17 to 20 |
+| The window is in the tree. `HiddenWindowParkingWorker.apply` reads owners and spaces | 22 to 28 |
+| WindowServer gets the window from Ghostty: moved, resized, ordered in (806, 807, 815) | 27 to 33 |
+| The layout. No AX request for the new window. The old one waits for it (`waitForNewWindows`) | 27 to 41 |
+| The curtain gives up: "another frame" | 141 to 156 |
+| The old window gets its frame, the refresh goes on, and its layout asks the new window | 150 to 210 |
+
+Ghostty answers AX as soon as the window is its key window, and hands it to WindowServer with its next
+transaction, 12 to 15 ms later. In between, the window has no size, and `CGWindowListCreateDescriptionFromArray`
+has no record that `WindowServerWindowInfo` accepts (it wants a size). The worker takes the owner of a window from
+those records. A window without an owner isn't ready, its gate is cancelled, and the job of its frame returns
+before it asks the app. The curtain counted that job as the answer of the app. The eight windows that worked were
+handed to WindowServer before `apply` looked: 5 ms earlier or later decided.
+
+Two more things kept the next layout from repairing it. The job of the old window waited for the new one on the AX
+thread of Ghostty, which both windows share, so the refresh behind it (it reads `AXWindows` on that thread) couldn't
+go on until the curtain gave up. And nothing told the curtain that the frame had come to nothing.
+
+Why the measurements above never had it: they opened windows through AppleScript, and filmed. Either one is enough
+to hide it.
+
+| How the window is opened, and what else runs | AeroSpace asks for the frame after | Found before shown |
+| --- | --- | --- |
+| AppleScript `new window`, the probe films and asks WindowServer every 150 us | 55 to 87 ms | never, in 34 |
+| A key press posted to Ghostty, and a process every 40 ms that reads the idle time (the first `keys.py`) | 57 to 65 ms | never, in 8 |
+| A key press through the HID event tap, nothing else running | 22 to 58 ms | 8 of 42 |
+| The same, the probe asks WindowServer every 2 ms and doesn't film | 26 to 74 ms | 3 of 32 |
+| The same, the probe films (also with a picture of 256x144) | 47 to 78 ms | never, in 36 |
+
+The probe is the problem: it asked WindowServer about every window of the app as fast as WindowServer answered,
+and ScreenCaptureKit keeps it busy as well, so the questions of AeroSpace wait (`apply` took 15 to 20 ms then, and
+3 ms otherwise). `keys.py` therefore reads the signposts from the log afterwards, counts seconds without input
+with a call of its own (not a process), and presses its keys from one process that lives as long as the run: a
+process that talks to WindowServer and quits makes AeroSpace refresh (`runningApplicationsRemoved`), 30 ms later.
+A key press that is posted counts as an event of the keyboard for macOS, also one for a single app from a source
+of its own, so the script remembers its presses and stops for any other event.
+
+What changed (`NewWindowCurtain`, `HiddenWindowParkingWorker.findOwners`, `MacApp.setAxFrame`):
+
+- A window behind the curtain is its app's, whatever CGWindowList says: the curtain knows since the window was
+  created. The frame is asked for at once. Ghostty takes it before it hands the window to WindowServer (the window
+  is in its tile from the first moment that WindowServer has it), or right after.
+- The job of a frame tells the curtain when it's about to ask the app. A job that ends without it leaves no frame
+  behind: the window is "managed, without a frame" again, the next layout asks before anything else, and the
+  curtain starts a refresh of the app if the window is shown (three times at most for one window).
+- The other windows don't wait for a new window that has no frame coming. They keep their frames, and the layout
+  that places the new window makes room. If the window leaves the curtain without a frame after all, the curtain
+  starts the refresh that lays out everything.
+- A frame is judged only once the app has shown the window: WindowServer has no frame before that. And an app that
+  has answered and shown its window, while WindowServer has another frame 50 ms later, is asked once more. It
+  used to be shown where it was after 100 ms.
+
+On the build of this change (`c2fb78a0`, built from a copy of the repository), with Cmd+N through the HID event
+tap and nothing else running:
+
+| Run | Windows | In their tile when they left the curtain | Asked before shown | Left the curtain after (ms) |
+| --- | ---: | ---: | ---: | --- |
+| `base-keys-3` (before, `c2bbc723`) | 10 | 5 | never asked: 5 | 62 to 73, and 126 to 151 |
+| `fix-keys-1`, `-2`, `-3` | 42 | 42 | 8 | 45 to 84 (the medians: 57 to 67) |
+| `fix-keys-7`, `-8` (WindowServer asked every 2 ms) | 32 | 32 | 3 | 46 to 97 (77, 79) |
+| `fix-keys-4`, `-5`, `-6` (filmed) | 36 | 36 | 0 | 64 to 116 (78 to 96) |
+| `fix-stress-2`, `-3` (an AeroSpace command every 110 ms) | 30 | 30 | 2 | 59 to 107 (83, 84) |
+| `fix-rapid-1`, `-2` (five windows 350 and 250 ms apart, each splits the one before it) | 10 | 10 | 0 | 70 to 103 |
+
+WindowServer had the frame 15 ms after the app had answered and shown the window (the median of the first 140),
+and 37 ms at the latest: no window was asked twice. The 36 that were filmed: none outside of its tile in any frame,
+in their tile after 102 to 131 ms (the medians of the three films; the lighter the probe, the earlier). The 58 of
+`fix-keys-7`, `-8`, `fix-stress-3` and the two `fix-rapid` runs: WindowServer never had one on the desktop where
+its app had put it (`keys.py states`; the same question finds both windows of `base-1`, from before the curtain,
+there for 85 and 113 ms). In `fix-stress-2` it seemed to, for one window and 13 ms: the probe had read the frame
+3 ms before the window left the curtain, and the spaces after it. It asks for the spaces on both sides of the frame
+now.
+
+The paths that these windows never took, with the test app (`stubborn.py`, three windows next to each other on a
+scratch workspace):
+
+- **An app that gives its window its own frame back** in the turn of the run loop after the first request
+  (`SPAWN_OVERRIDE_FIRST_RESIZE`): asked again after 50 ms, and the window left the curtain in its tile, 117 to
+  128 ms after its birth. WindowServer never had it on the desktop anywhere else. Without the second request it
+  showed up where the app wanted it.
+- **Windows that can't be as narrow as their tile** (`SPAWN_MIN_WIDTH=1500`): asked twice, and shown as they are
+  after 160 ms.
+
+A command every 25 ms (`fix-stress-1`) isn't a test of this: no refresh ever finishes, closed windows stay in the
+tree, and the tiles themselves change from layout to layout.
+
+### Zen animates the first frames
+
+Cmd+N in Zen, on the same build: the first of five windows, and the third of three that were opened in a row,
+left the curtain with "another frame" after two requests, 258 and 345 ms after their birth. WindowServer's frames
+of the first one, in ms after it joined the curtain:
+
+| | ms | Frame |
+| --- | ---: | --- |
+| Zen shows the window, behind the curtain | 52 | 45,10 1984x1106 |
+| AeroSpace asks for the tile (1031,13 1004x1126), and Zen answers | 143 to 154 | |
+| | 208 | 25,0 1756x1126 |
+| The curtain asks again | 214 | |
+| | 225 | 25,-1 1603x1128 |
+| The second request, after `AXEnhancedUserInterface` was disabled | 240 to 267 | |
+| | 285 | 25,-1 1177x1128 |
+| | 309 | 26,0 1089x1126 |
+| "another frame": the window leaves the curtain, on top of the other window | 345 | 26,0 1033x1126 |
+| | 417 | 26,0 1004x1126 |
+| The next layout | 451 | 1031,13 1004x1126 |
+
+The size is animated, and the position is lost on the way: with `AXEnhancedUserInterface` enabled, AppKit animates
+what comes through AX. The window was seen for 90 ms where it didn't belong (with one request of 100 ms, as before,
+it would have left in the middle of the animation). AeroSpace disables the attribute for its
+frames, but it asks for it after the frames if the last answer was false
+(`EnhancedUserInterface`: a game takes a frame or two for every answer). Zen's value, read every 20 ms while three
+windows were opened and closed (`ax-attr PID watch`):
+
+| | s | Value |
+| --- | ---: | ---: |
+| Set to 0 by hand. Nothing changes it while Zen is in the background | 0 | 0 |
+| Cmd+N: Zen creates a window | 2.00 | 1 |
+| AeroSpace disables it for the frames of the new window | 2.38 | 0 |
+| The layout 100 ms later asks first, and the answer is false | 2.48 | 0 |
+| Zen, by itself | 2.95 | 1 |
+| The next window: 0 at 6.45 s, and 1 again at 6.97 s. The third: 10.52 and 11.02 | | |
+
+So Zen enables it whenever it creates a window, and half a second after it was disabled. It answers the request
+that disables it with "not implemented" (-25208) and does it, so AeroSpace never restores the value, and doesn't
+need to. After every new window the last answer was false. A window that is closed gets the answer true again
+(the frames of the window that grows back go out first, animated), and the next new window is asked first. Without
+a window closed in between, the frames of the next new window go out first.
+
+Now an app that had the attribute enabled once is asked before every batch, and every app is asked before the
+frame of a window behind the curtain. On the build with that (`3e34dcd7`): 14 Zen windows, four and three in a row
+(2.6 and 1.2 s apart) and four one by one. 13 were in their tile when they left the curtain, 156 to 205 ms after
+their birth, without a second request, and their frames went from where Zen put them to the tile in one step. The
+fourteenth was the fourth in a row: its tile is 272 points high, and a Zen window 495 at the least. And Ghostty
+again, 32 windows (five of them 300 ms apart): all in their tile.
+
 ### What it costs
 
 - A new window is seen later than it used to be seen in the wrong place: 138 ms after its birth instead of 57 with
   Ghostty. It's not later than it used to be in the right place.
+- A window that doesn't take the frame of its tile (it can't be that small) gets two requests of 50 ms each, and
+  shows up 160 ms after its birth. With one request of 100 ms it was about 40 ms less.
 - A dialog shows up half a frame later, and a window that its app shows more than 150 ms before AeroSpace manages it
   (an app that doesn't answer AX) shows up 150 ms later, where its app put it.
 - Every new window of a regular app costs three questions to WindowServer and a request to WindowManager, and while
@@ -778,13 +927,26 @@ Other windows, on the same build or on the first one of the change:
 - An app that creates a window more than 5 s before it shows it gets no curtain: the window is taken out when the
   5 s are over, and a window gets the curtain once.
 - The opening animation of macOS goes on behind the curtain. A window that leaves it early shows the rest of it.
+- An app that gives a window another frame after it has left the curtain is seen doing it, as before.
+- WindowServer's events reach AeroSpace on its main thread. A refresh of all apps keeps that thread busy for 30 ms
+  (LaunchServices), and the curtain only looks every 50 ms by itself until its window has a frame or is shown: in
+  one of 30 windows of the stress runs it noticed 26 ms late that the window was shown. Nothing was seen of it.
+- `apply` asks WindowServer about every window before the layout that places a new one, 3 ms when WindowServer is
+  idle and 15 to 20 ms right after it has put the new window on screen. That's more than half of the windows, and
+  most of the difference between 45 and 80 ms.
 
 Probe sources and recordings are in the ignored directory `.local/new-window-flash/`: `SpawnProbe.m` (WindowServer's
 events, the AX notifications, the state of the windows and the pixels on one clock, and the curtain of the probe),
 `SpawnApp.m` (a test app that opens windows of every kind), `AxTool.m` (presses a menu item), `run.py` (records
 and prints timelines: `ghostty`, `testapp`, `app`, `show`, `seen`, `check`), `stats.py` (the three numbers per
 window), `kinds.py` and `live.py` (every kind of window: what WindowServer knows, and what AeroSpace does),
-`trial.sh`, `check.sh` and `reinstall.py` (build, test and install from a copy of the repository). The recordings:
+`trial.sh`, `check.sh` and `reinstall.py` (build, test and install from a copy of the repository), `keys.py`
+(Cmd+N through `press-key`, only while nobody uses the machine; `report` and `states` read a run), `stubborn.py`
+(the test app as an app that doesn't take its frame), `timeline.py` and `aligned.py` (one window, signposts and
+probe on one clock), `proper.py` (install and restore the layouts). The probe takes `PROBE_POLL_US`,
+`PROBE_CAPTURE_DIVISOR` and `PROBE_NO_CAPTURE`. The recordings:
 `base-1`, `base-2` and `other-app-1` (before), `c-deferred`, `c-immediate`, `c-later-30`, `imm-c1` and `curtain-1`
 (the curtain of the probe), `kind-*` (what WindowServer knows), `new-1` to `new-3` and `t1-*` (earlier builds),
-`final-2`, `final-3`, `t4-*`, `zen-1` and `zen-2` (the numbers above).
+`final-2`, `final-3`, `t4-*`, `zen-1` and `zen-2` (the numbers above), `real-cmd-n-before` (the log of the eleven
+windows that were opened by hand), `base-keys-*`, `fix-keys-*`, `fix-stress-*` and `stubborn-*` (the frame that
+nobody asked for).
