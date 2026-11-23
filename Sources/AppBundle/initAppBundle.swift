@@ -19,6 +19,7 @@ import Foundation
 
         startUnixSocketServer()
         GlobalObserver.initObserver()
+        observeNewWindows()
         Workspace.garbageCollectUnusedWorkspaces() // init workspaces
         _ = Workspace.all.first?.focusWorkspace()
         await runHeavyCompleteRefreshSession(

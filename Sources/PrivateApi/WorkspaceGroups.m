@@ -457,3 +457,79 @@ bool AeroSpaceSettleWindowSwap(CFArrayRef reveal, CFArrayRef hide, AeroSpaceWind
         }
     }
 }
+
+bool AeroSpacePrepareCurtainGroup(uint64_t group, CFStringRef rawName) {
+    if (!group || !rawName || !AeroSpaceWindowSwapAvailable()) return false;
+    @autoreleasepool {
+        if (!ownsGroup(group, (__bridge NSString *)rawName)) return false;
+        CFTypeRef transaction = createGroupTransaction(groupConnection());
+        if (!transaction) return false;
+        setGroupAlpha(transaction, group, 0);
+        showGroup(transaction, group);
+        commitGroupTransaction(transaction, true);
+        CFRelease(transaction);
+        return true;
+    }
+}
+
+bool AeroSpaceCurtainWindow(CGWindowID windowId, uint64_t group) {
+    if (!windowId || !group || !AeroSpaceWindowSwapAvailable()) return false;
+    @autoreleasepool {
+        @try {
+            // Selector 8 removes other groups only: a window that is on the desktop already stays on it, unseen
+            return submitMove(@[@(windowId)], group, 8);
+        } @catch (NSException *exception) {
+            return false;
+        }
+    }
+}
+
+bool AeroSpaceUncurtainWindow(CGWindowID windowId, uint64_t group, uint64_t home) {
+    if (!windowId || !group || !home || !AeroSpaceWindowSwapAvailable()) return false;
+    NSNumber *desktop = @(home);
+    @autoreleasepool {
+        @try {
+            NSNumber *window = @(windowId), *curtain = @(group);
+            id<AeroWorkspaceGroupRemoval> operation = [(id<AeroWorkspaceGroupRemoval>)[leaveGroupClass alloc]
+                initWithWindows:@[window] spaces:@[curtain]];
+            if (!operation) return false;
+            [operation performWithWMBridgeDelegate];
+            double deadline = NSProcessInfo.processInfo.systemUptime + .25;
+            NSArray<NSNumber *> *membership = windowGroupSpaces(windowId);
+            while (!membership || [membership containsObject:curtain]) {
+                if (NSProcessInfo.processInfo.systemUptime >= deadline) return false;
+                usleep(250);
+                membership = windowGroupSpaces(windowId);
+            }
+            // WindowServer puts a window that is ordered in, and in no space, on the active desktop by itself.
+            // If it doesn't, the window would stay unseen for good
+            AeroSpaceNewWindowInfo info;
+            deadline = NSProcessInfo.processInfo.systemUptime + .05;
+            while (!membership.count && AeroSpaceCopyNewWindowInfo(windowId, &info) && info.orderedIn) {
+                if (NSProcessInfo.processInfo.systemUptime >= deadline) {
+                    return submitMove(@[window], desktop.unsignedLongLongValue, 15) && awaitMemberships(@[window], @[desktop], 250);
+                }
+                usleep(250);
+                membership = windowGroupSpaces(windowId);
+                if (!membership) return false;
+            }
+            return true;
+        } @catch (NSException *exception) {
+            return false;
+        }
+    }
+}
+
+CFArrayRef AeroSpaceCopyCurtainedWindows(uint64_t group) {
+    if (!group || !AeroSpaceWindowSwapAvailable()) return NULL;
+    @autoreleasepool {
+        NSArray *records = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
+        if (!records) return NULL;
+        NSMutableArray<NSNumber *> *curtained = [NSMutableArray array];
+        for (NSDictionary *record in records) {
+            NSNumber *window = record[(__bridge NSString *)kCGWindowNumber];
+            if ([windowGroupSpaces(window.unsignedIntValue) containsObject:@(group)]) [curtained addObject:window];
+        }
+        return CFBridgingRetain(curtained);
+    }
+}

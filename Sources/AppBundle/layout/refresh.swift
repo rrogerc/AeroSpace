@@ -8,6 +8,8 @@ private struct RefreshRequest {
     var scope: RefreshScope
     var event: RefreshSessionEvent
     var preLayout: Bool
+    /// The refresh doesn't wait for more events to come: a new window waits unseen for its frame (NewWindowCurtain)
+    var isUrgent = false
 }
 
 @MainActor private var pendingRefresh: RefreshRequest?
@@ -19,7 +21,12 @@ private struct RefreshRequest {
 @MainActor
 private func enqueueRefresh(_ request: RefreshRequest) {
     if let pending = pendingRefresh {
-        pendingRefresh = RefreshRequest(scope: pending.scope.union(request.scope), event: request.event, preLayout: pending.preLayout || request.preLayout)
+        pendingRefresh = RefreshRequest(
+            scope: pending.scope.union(request.scope),
+            event: request.event,
+            preLayout: pending.preLayout || request.preLayout,
+            isUrgent: pending.isUrgent || request.isUrgent,
+        )
     } else {
         pendingRefresh = request
     }
@@ -46,7 +53,7 @@ private func startPendingRefresh() {
     let generation = refreshGeneration
     activeRefreshTask = Task.startUnstructured { @MainActor in
         // Coalesce a notification burst without postponing indefinitely on every event.
-        try await Task.sleep(for: .milliseconds(30))
+        if pendingRefresh?.isUrgent != true { try await Task.sleep(for: .milliseconds(30)) }
         try checkCancellation()
         guard generation == refreshGeneration, let request = pendingRefresh else { return }
         pendingRefresh = nil
@@ -72,10 +79,25 @@ func scheduleCancellableCompleteRefreshSession(
     optimisticallyPreLayoutWorkspaces: Bool = false,
     scope: RefreshScope = .all,
 ) {
-    // Keep the interrupted scope: an event from app B must not lose unfinished discovery of app A.
-    if runningRefresh != nil { cancelCompleteRefresh() }
-    enqueueRefresh(RefreshRequest(scope: scope, event: event, preLayout: optimisticallyPreLayoutWorkspaces))
+    let isUrgent = isAboutToPlaceNewWindow(scope)
+    if let runningRefresh {
+        // Keep the interrupted scope: an event from app B must not lose unfinished discovery of app A.
+        if !isAboutToPlaceNewWindow(runningRefresh.scope) { cancelCompleteRefresh() }
+    } else if isUrgent && activeRefreshTask != nil && pendingRefresh?.isUrgent != true {
+        // The pending refresh is still waiting for more events to come. This one ends the wait
+        cancelCompleteRefresh()
+    }
+    enqueueRefresh(RefreshRequest(scope: scope, event: event, preLayout: optimisticallyPreLayoutWorkspaces, isUrgent: isUrgent))
     startPendingRefresh()
+}
+
+/// A new window of an app that the refresh looks at waits unseen for its frame: see NewWindowCurtain. Its app posts
+/// one AX notification after the other while it shows the window. A refresh that waits for more of them, or starts
+/// over with each of them, keeps the window waiting for 30 ms and more. So such a refresh starts at once, and an
+/// event that comes while it runs is refreshed after it
+@MainActor
+private func isAboutToPlaceNewWindow(_ scope: RefreshScope) -> Bool {
+    NewWindowCurtain.shared.appsWithoutFrame.contains(where: scope.contains)
 }
 
 @MainActor
@@ -98,19 +120,37 @@ func runHeavyCompleteRefreshSession(
             guard focusToken.isCurrent else { return }
             updateFocusCache(nativeFocused)
 
-            if shouldLayoutWorkspaces && optimisticallyPreLayoutWorkspaces { try await layoutWorkspaces() }
+            // A new window that has the focus is in the tree by now, and it waits unseen for its frame: see
+            // NewWindowCurtain. The rest of the refresh asks its app a dozen more questions, and an app that is busy
+            // with its new window takes 50 ms to answer them. So the window is asked for its frame right away
+            let placesNewWindow = NewWindowCurtain.shared.hasManagedWindowWithoutFrame
+            if shouldLayoutWorkspaces && (optimisticallyPreLayoutWorkspaces || placesNewWindow) { try await layoutWorkspaces() }
 
             await refreshModel_nonCancellable()
-            try await refresh(scope)
+            var step = signposter.beginInterval("refreshWindows")
+            do {
+                defer { signposter.endInterval("refreshWindows", step) }
+                try await refresh(scope)
+            }
             rescanAppsWithUnmanagedWindowsLater()
             gcMonitors()
-            try await normalizeLayoutReason(scope: scope)
+            step = signposter.beginInterval("normalizeLayoutReason")
+            do {
+                defer { signposter.endInterval("normalizeLayoutReason", step) }
+                try await normalizeLayoutReason(scope: scope)
+            }
             // Closed, minimized and hidden windows leave the tiling tree after the model refresh, and can leave a window
             // alone in fullscreen. End it before the tray shows fullscreen
             exitPointlessFullscreen()
 
-            updateTrayText()
-            SecureInputPanel.shared.refresh()
+            // The windows get their frames before the tray gets its text, like in runLightSession: a new window
+            // waits unseen for its frame (NewWindowCurtain). The tray is updated also if the layout is cancelled
+            defer {
+                let tray = signposter.beginInterval("updateTray")
+                updateTrayText()
+                SecureInputPanel.shared.refresh()
+                signposter.endInterval("updateTray", tray)
+            }
             if shouldLayoutWorkspaces { try await layoutWorkspaces() }
         }
     }
@@ -318,6 +358,7 @@ private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil, reve
                 workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() }
                 try await workspace.layoutWorkspace()
             }
+            showNewWindowsWithoutTile()
             return
         case .recovering, .suspended:
             // AX focus or geometry writes while a window is still parked could
@@ -374,6 +415,20 @@ private func layoutWorkspaces(earlyFocus: WorkspaceFocusPreparation? = nil, reve
     let hiddenFrames = observeHiddenWindowFrames(alreadyHidden.map(\.0))
     for (window, corner) in alreadyHidden {
         try await window.hideInCorner(corner, observation: hiddenFrames[window.windowId])
+    }
+}
+
+/// A new window waits behind the curtain for the frame of its tile: see NewWindowCurtain. A window that AeroSpace
+/// manages and that got no tile in the layout (a dialog, a popup, a window that is minimized by now) isn't going to
+/// get one, and shows up as it is
+@MainActor
+private func showNewWindowsWithoutTile() {
+    for id in NewWindowCurtain.shared.curtained {
+        // Not managed yet: the curtain has a deadline of its own
+        guard let window = MacWindow.allWindowsMap[id] else { continue }
+        let isTile = window.layoutReason == .standard && window.parent is TilingContainer &&
+            window.nodeWorkspace?.isVisible == true && id != currentlyManipulatedWithMouseWindowId
+        if !isTile { NewWindowCurtain.shared.show(id) }
     }
 }
 

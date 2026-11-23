@@ -830,6 +830,67 @@ final class HiddenWindowParkingTest: XCTestCase {
         return driver
     }
 
+    func testNewWindowBehindTheCurtainGetsItsFrameLikeAWindowOnTheDesktop() async {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.curtain = 300; $0.owners[30] = 300; $0.memberships[30] = [300] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let new = NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "1")
+        let plan = native(await worker.apply(windows() + [new], request: 1))
+        XCTAssertTrue(plan[30]?.1.isReady == true, "Nobody has seen the window yet, and it's asked for its frame already")
+        XCTAssertEqual(driver.read { $0.memberships[30] }, [300], "The curtain shows the window, not the worker")
+        XCTAssertTrue(driver.read { $0.reveals.isEmpty })
+        XCTAssertEqual(driver.read { $0.hides }, [[20]])
+
+        // A window that was on the desktop when it got the curtain is still unseen
+        driver.mutate { $0.memberships[30] = [1, 300] }
+        let both = native(await worker.apply(windows() + [new], request: 2))
+        XCTAssertTrue(both[30]?.1 === plan[30]?.1)
+
+        // It has left the curtain: nothing changes for it
+        driver.mutate { $0.memberships[30] = [1] }
+        let later = native(await worker.apply(windows() + [new], request: 3))
+        XCTAssertTrue(later[30]?.1 === plan[30]?.1)
+        XCTAssertTrue(later[30]?.1.isReady == true)
+        XCTAssertTrue(driver.read { $0.leftCurtain.isEmpty })
+        _ = await worker.stop(retry: false)
+    }
+
+    func testNewWindowOfAHiddenWorkspaceGoesStraightToTheHiddenGroup() async throws {
+        let driver = HiddenParkingTestDriver()
+        // Nothing else is hidden: the hidden group is created for the new window
+        driver.mutate { $0.curtain = 300; $0.owners = [10: 100, 30: 300]; $0.memberships = [10: [1], 30: [300]] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let visible = NativeVisibilityWindow(id: 10, pid: 100, visible: true, workspace: "1")
+        // E.g. a callback of on-window-detected moved it to another workspace
+        let new = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "2")
+        let plan = native(await worker.apply([visible, new], request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 30: [group]])
+        XCTAssertEqual(driver.read { $0.calls }, ["hide [30]"], "It was never on the desktop")
+        XCTAssertEqual(driver.read { $0.leftCurtain }, [[30]])
+        XCTAssertFalse(plan[30]?.1.isReady == true)
+        XCTAssertTrue(plan[10]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 30: [1]])
+    }
+
+    func testNewWindowIsNoPartOfASwap() async throws {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        // A new window of the workspace that is being left
+        driver.mutate { $0.curtain = 300; $0.owners[30] = 300; $0.memberships[30] = [300] }
+        let new = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "1")
+        _ = native(await worker.apply(windows(20) + [new], request: 2))
+        XCTAssertEqual(driver.read { $0.calls }, ["hide [20]", "stage [20] [10]", "commit", "settle [20] [10]", "hide [30]"])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1], 30: [group]])
+        XCTAssertEqual(driver.read { $0.leftCurtain }, [[30]])
+        _ = await worker.stop(retry: false)
+    }
+
     func testWindowsOfTwoWorkspacesChangePlacesInOneTransaction() async throws {
         let driver = swapDriver()
         let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
@@ -1099,6 +1160,9 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var beforeSettle: (@Sendable () -> Void)?
         /// Every call that shows or hides a window, in order
         var calls: [String] = []
+        /// The group of the new windows that nobody has seen yet: see NewWindowCurtain
+        var curtain: UInt64?
+        var leftCurtain: [[UInt32]] = []
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -1201,6 +1265,9 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
             return true
         }
     }
+
+    func curtain() -> UInt64? { state.withLock { $0.curtain } }
+    func leftCurtain(_ ids: [UInt32]) { state.withLock { $0.leftCurtain.append(ids) } }
 
     func createSwapGroups(home: UInt64) -> WindowSwapGroups? {
         state.withLock { state in

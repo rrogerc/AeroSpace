@@ -487,9 +487,10 @@ final class NativeWorkspaceVisibility {
         guard let values = AeroSpaceCopyAllWindowSpaces(id) as? [NSNumber] else { return false }
         let spaces = values.map(\.uint64Value)
         if spaces == [home] || hiddenGroup.map({ spaces == [$0] }) == true { return true }
-        // On its way to the desktop or to the hidden group
-        return !spaces.isEmpty && spaces.contains(where: swapGroups.contains) &&
-            spaces.allSatisfy { $0 == home || $0 == hiddenGroup || swapGroups.contains($0) }
+        // On its way to the desktop or to the hidden group, or a new window that nobody has seen yet
+        let curtain = NewWindowCurtain.shared.group
+        return !spaces.isEmpty && spaces.contains(where: { swapGroups.contains($0) || $0 == curtain }) &&
+            spaces.allSatisfy { $0 == home || $0 == hiddenGroup || swapGroups.contains($0) || $0 == curtain }
     }
 
     func isWindowOnForeignNativeDesktop(_ id: UInt32) -> Bool {
@@ -499,6 +500,7 @@ final class NativeWorkspaceVisibility {
         let spaces = values.map(\.uint64Value)
         guard !spaces.contains(hiddenHome), hiddenGroup.map({ !spaces.contains($0) }) ?? true,
               !spaces.contains(where: swapGroups.contains),
+              NewWindowCurtain.shared.group.map({ !spaces.contains($0) }) ?? true,
               let raw = AeroSpaceCopyNativeDisplays(), let display = NativeDisplaySpaces.decode(raw)
         else { return false }
         return display.spaces.contains { $0.id != hiddenHome && ($0.type == 0 || $0.type == 4) && spaces.contains($0.id) }
@@ -583,19 +585,26 @@ final class NativeWorkspaceVisibility {
             swapGroups = hiddenContext.swapGroups
         }
         switch plan {
-            case .native(let gates): NativeVisibilityGates.shared.replace(gates)
+            case .native(let gates):
+                NativeVisibilityGates.shared.replace(gates)
+                // New windows show up in their tile: see NewWindowCurtain
+                if backend == .hiddenParking, let hiddenHome { NewWindowCurtain.shared.activate(home: hiddenHome) }
             case .offscreen:
                 // The hidden worker can retain its home while no group is needed.
                 // Explicit disable/reload must still be able to clear that anchor.
                 if backend != .hiddenParking { activeBackend = nil }
                 NativeVisibilityGates.shared.replace([:])
-            case .recovering, .suspended: blockWindowWorkDuringRecovery()
+                NewWindowCurtain.shared.deactivate()
+            case .recovering, .suspended:
+                blockWindowWorkDuringRecovery()
+                NewWindowCurtain.shared.deactivate()
         }
         return plan
     }
 
     @discardableResult
     func stop() async -> Bool {
+        NewWindowCurtain.shared.deactivate()
         guard let backend = activeBackend else { return true }
         request &+= 1
         let request = request
@@ -629,6 +638,7 @@ final class NativeWorkspaceVisibility {
 
     func stopBeforeTermination() -> Bool {
         NativeVisibilityGates.shared.replace([:])
+        NewWindowCurtain.shared.deactivate(wait: true)
         let semaphore = DispatchSemaphore(value: 0)
         let result = OSAllocatedUnfairLock(initialState: false)
         let worker = worker

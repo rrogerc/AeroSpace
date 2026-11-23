@@ -235,8 +235,14 @@ final class MacApp: AbstractApp {
         let visibility = NativeVisibilityGates.shared.get(windowId, pid: pid)
         let frame = WindowFrameUpdate(topLeft: topLeft, size: size).onWholePoints
         let screens = monitorInfos.map { CGRect(x: $0.rect.topLeftX, y: $0.rect.topLeftY, width: $0.rect.width, height: $0.rect.height) }
-        setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
+        // A new window shows up in its tile before the windows that make room for it change: see NewWindowCurtain
+        let newWindows = newWindowsToShowFirst
+        let job = withWindowAsync(windowId, .cancellable, suppressAnimations: true) { [enhancedUserInterface, pid] window, job in
             if let visibility, !visibility.wait(for: job) { return }
+            if !newWindows.isEmpty {
+                NewWindowCurtain.shared.wait(for: newWindows, job)
+                try job.checkCancellation()
+            }
             if afterReveals {
                 PendingReveals.shared.wait(for: job, pid: pid)
                 try job.checkCancellation()
@@ -253,6 +259,10 @@ final class MacApp: AbstractApp {
             try job.checkCancellation()
             let moveFirst = bounds.map { update.movesFirst(from: $0, screens: screens) } ?? false
             try setFrame(window, update.topLeft, update.size, moveFirst: moveFirst, job)
+        }
+        setFrameJobs[windowId] = job
+        if let topLeft = frame.topLeft, let size = frame.size {
+            NewWindowCurtain.shared.frame(windowId, job, CGRect(origin: topLeft, size: size))
         }
     }
 

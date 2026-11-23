@@ -23,6 +23,10 @@ protocol HiddenWindowParkingDriver: Sendable {
     func commit(_ swap: WindowSwapGroups) -> Bool
     /// The revealed windows end up on the desktop only, and the hidden ones in `parking` only. Nothing of it shows
     func settle(reveal: [UInt32], hide: [UInt32], parking: WorkspaceVisibilityGroup, swap: WindowSwapGroups, home: UInt64) -> Bool
+    /// The group of the new windows that nobody has seen yet: see NewWindowCurtain. nil if there's none
+    func curtain() -> UInt64?
+    /// New windows went from the curtain straight to the hidden group
+    func leftCurtain(_ ids: [UInt32])
 }
 
 /// A workspace switch used to reveal the windows of the next workspace, and to hide the windows of the previous one
@@ -118,6 +122,9 @@ struct WindowServerHiddenParkingDriver: HiddenWindowParkingDriver {
     func settle(reveal: [UInt32], hide: [UInt32], parking: WorkspaceVisibilityGroup, swap: WindowSwapGroups, home: UInt64) -> Bool {
         AeroSpaceSettleWindowSwap(numbers(reveal), numbers(hide), spaces(parking: parking, swap: swap, home: home))
     }
+
+    func curtain() -> UInt64? { NewWindowCurtain.shared.group }
+    func leftCurtain(_ ids: [UInt32]) { NewWindowCurtain.shared.forget(ids) }
 
     private func numbers(_ ids: [UInt32]) -> CFArray { ids.map { NSNumber(value: $0) } as CFArray }
 
@@ -272,9 +279,18 @@ actor HiddenWindowParkingWorker {
             }
         }
 
+        // A new window that nobody has seen yet waits behind the curtain for its frame: see NewWindowCurtain.
+        // On a visible workspace it gets the frame like a window on the desktop, and the curtain shows it then
+        let curtain = driver.curtain()
+        func isNew(_ membership: [UInt64]?) -> Bool {
+            guard let curtain, let membership, membership.contains(curtain) else { return false }
+            return membership.allSatisfy { $0 == curtain || $0 == home.id }
+        }
         var memberships: [UInt32: [UInt64]] = [:]
         var hide: [UInt32] = []
         var reveal: [UInt32] = []
+        // New windows of a hidden workspace. They go straight to the hidden group, and are never seen on the way
+        var park: [UInt32] = []
         for window in windows where owners[window.id] == window.pid {
             guard let membership = driver.membership(window.id) else {
                 beginRecovery(clearHome: false)
@@ -283,14 +299,15 @@ actor HiddenWindowParkingWorker {
             memberships[window.id] = membership
             if window.visible, let group, membership == [group.id] { reveal.append(window.id) }
             if !window.visible, membership == [home.id] { hide.append(window.id) }
+            if !window.visible, isNew(membership) { park.append(window.id) }
         }
         // Cancel outgoing frame/focus waiters before submitting any transition.
         for (id, entry) in entries where requested[id] != entry.window ||
-            owners[id] != entry.window.pid || memberships[id] != [home.id]
+            owners[id] != entry.window.pid || (memberships[id] != [home.id] && !isNew(memberships[id]))
         {
             entry.gate.cancel()
         }
-        if group == nil, !hide.isEmpty {
+        if group == nil, !hide.isEmpty || !park.isEmpty {
             let name = "AeroSpace hidden windows \(getuid()) \(getpid()) \(UUID().uuidString)"
             let id = driver.create(name)
             guard id != 0 else {
@@ -302,7 +319,7 @@ actor HiddenWindowParkingWorker {
             // transaction that showed the group gets there a frame later
             swapGroups = driver.createSwapGroups(home: home.id)
         }
-        if (!hide.isEmpty || !reveal.isEmpty), !isActive(home) {
+        if (!hide.isEmpty || !reveal.isEmpty || !park.isEmpty), !isActive(home) {
             suspended = true
             beginRecovery(clearHome: false, restartDelay: .zero)
             return currentPlan
@@ -338,7 +355,15 @@ actor HiddenWindowParkingWorker {
                 for id in hide { memberships[id] = [group.id] }
             }
         }
-        if !hide.isEmpty || !reveal.isEmpty {
+        if let group, !park.isEmpty {
+            guard driver.hide(park, in: group) else {
+                beginRecovery(clearHome: false)
+                return currentPlan
+            }
+            for id in park { memberships[id] = [group.id] }
+            driver.leftCurtain(park)
+        }
+        if !hide.isEmpty || !reveal.isEmpty || !park.isEmpty {
             guard let finalLayout = driver.display(), finalLayout.display == home.display,
                   finalLayout.current == home.id,
                   finalLayout.spaces.contains(where: { $0.id == home.id && $0.type == 0 })
@@ -357,7 +382,7 @@ actor HiddenWindowParkingWorker {
                     beginRecovery(clearHome: false)
                     return currentPlan
                 }
-                if (hide.contains(window.id) || reveal.contains(window.id)), membership != memberships[window.id] {
+                if (hide.contains(window.id) || reveal.contains(window.id) || park.contains(window.id)), membership != memberships[window.id] {
                     beginRecovery(clearHome: false)
                     return currentPlan
                 }
@@ -366,7 +391,8 @@ actor HiddenWindowParkingWorker {
         }
         var next: [UInt32: Entry] = [:]
         for window in windows {
-            let ready = window.visible && owners[window.id] == window.pid && memberships[window.id] == [home.id]
+            let ready = window.visible && owners[window.id] == window.pid &&
+                (memberships[window.id] == [home.id] || isNew(memberships[window.id]))
             if let previous = entries[window.id], previous.window == window, ready, previous.gate.isReady {
                 next[window.id] = previous
             } else {

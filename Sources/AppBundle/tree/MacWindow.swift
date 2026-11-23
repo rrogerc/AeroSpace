@@ -34,6 +34,7 @@ final class MacWindow: Window {
         )
         let window = MacWindow(windowId, macApp, lastFloatingSize: rect?.size, parent: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
         allWindowsMap[windowId] = window
+        NewWindowCurtain.shared.manages(windowId)
 
         try await debugWindowsIfRecording(window, .cancellable)
         if try await !restoreClosedWindowsCacheIfNeeded(newlyDetectedWindow: window) {

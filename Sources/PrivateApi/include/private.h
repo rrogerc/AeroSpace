@@ -117,4 +117,50 @@ bool AeroSpaceCommitWindowSwap(AeroSpaceWindowSwapSpaces spaces);
 // Waits until the revealed windows are on `home` only, and the hidden ones in `parking` only.
 bool AeroSpaceSettleWindowSwap(CFArrayRef reveal, CFArrayRef hide, AeroSpaceWindowSwapSpaces spaces);
 
+// New windows. An app shows a new window where it likes, and nobody can move the window before it's there. But
+// WindowServer knows a window before it's on screen, and a window that is in a shown group with alpha 0 isn't drawn
+// (see the swap above). So a new window joins such a group, the curtain, the moment WindowServer knows it, gets its
+// frame there, and leaves the group when it has it.
+//
+// AppKit sets the level of a window the moment it creates it, and WindowServer sends the level of every window to a
+// connection that asked for the notifications of at least one window. The window is on screen with the next
+// transaction of its app: 20 ms later at the least, and more than 40 for an app that sets up a terminal first.
+typedef CF_ENUM(uint32_t, AeroSpaceWindowEvent) {
+    AeroSpaceWindowEventClosed = 804,
+    AeroSpaceWindowEventMoved = 806,
+    AeroSpaceWindowEventResized = 807,
+    // Of any window, also of one that wasn't asked for with AeroSpaceWatchWindows: the first sign of a new window
+    AeroSpaceWindowEventLevelChanged = 811,
+    AeroSpaceWindowEventOrderedIn = 815,
+};
+typedef void (*AeroSpaceWindowEventHandler)(uint32_t event, CGWindowID windowId);
+bool AeroSpaceWindowEventsAvailable(void);
+// The handler is called on the main thread. Only the first call registers a handler
+bool AeroSpaceObserveWindowEvents(AeroSpaceWindowEventHandler handler);
+// The windows to get the other events of. Replaces the windows of the call before
+void AeroSpaceWatchWindows(const CGWindowID *windowIds, size_t count);
+
+typedef struct {
+    pid_t pid;
+    int32_t level;
+    // The window that a sheet, a popover or a menu belongs to
+    CGWindowID parent;
+    bool orderedIn;
+    CGRect bounds;
+} AeroSpaceNewWindowInfo;
+// What WindowServer knows about a window, on screen or not. False if it doesn't know the window
+bool AeroSpaceCopyNewWindowInfo(CGWindowID windowId, AeroSpaceNewWindowInfo *info);
+
+// The curtain is a group like `arriving` of a swap: shown, with alpha 0. The functions below must run outside the
+// main thread, like the ones above.
+bool AeroSpacePrepareCurtainGroup(uint64_t group, CFStringRef uniqueName);
+// Sent, not awaited: the window is in the group a few milliseconds later. A window that isn't on the desktop yet
+// doesn't join it while it's in the group, so it's in the group only.
+bool AeroSpaceCurtainWindow(CGWindowID windowId, uint64_t group);
+// Waits until the window is out of the group. A window that is ordered in is on a desktop afterwards (on `home`,
+// if WindowServer didn't put it on the active one by itself).
+bool AeroSpaceUncurtainWindow(CGWindowID windowId, uint64_t group, uint64_t home);
+// The windows that are in the group (CFNumber). NULL if WindowServer can't be asked
+CFArrayRef AeroSpaceCopyCurtainedWindows(uint64_t group) CF_RETURNS_RETAINED;
+
 #endif

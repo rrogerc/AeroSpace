@@ -11,7 +11,12 @@ extension Workspace {
         }
         let rect = workspaceMonitor.visibleRectPaddedByOuterGaps
         let height = workspaceMonitor.layoutHeight(of: rect)
-        try await layoutRecursive(rect.topLeftCorner, width: rect.width, height: height, virtual: rect, LayoutContext(self))
+        let context = LayoutContext(self)
+        try await layoutRecursive(rect.topLeftCorner, width: rect.width, height: height, virtual: rect, context)
+        // The new windows have been asked for their frames by now. The other windows make room once those are seen
+        $newWindowsToShowFirst.withValue(context.newWindows) {
+            for frame in context.otherFrames.frames { frame() }
+        }
     }
 }
 
@@ -47,11 +52,11 @@ extension TreeNode {
                     lastAppliedLayoutVirtualRect = virtual
                     if window.isFullscreen && window == context.workspace.rootTilingContainer.mostRecentWindowRecursive {
                         lastAppliedLayoutPhysicalRect = nil
-                        window.layoutFullscreen(context)
+                        context.write(window) { window.layoutFullscreen(context) }
                     } else {
                         lastAppliedLayoutPhysicalRect = physicalRect
                         window.isFullscreen = false
-                        window.setAxFrame(point, CGSize(width: width, height: height))
+                        context.write(window) { window.setAxFrame(point, CGSize(width: width, height: height)) }
                     }
                 }
             case .tilingContainer(let container):
@@ -73,12 +78,28 @@ extension TreeNode {
 private struct LayoutContext {
     let workspace: Workspace
     let resolvedGaps: ResolvedGaps
+    /// The new tiles of the workspace that nobody has seen yet: see NewWindowCurtain. They're asked for their frames
+    /// first, and show up when they have them. The other windows change after that: a window that shrinks before the
+    /// new one is there shows the wallpaper in between
+    let newWindows: Set<UInt32>
+    let otherFrames = LaterFrames()
 
     @MainActor
     init(_ workspace: Workspace) {
         self.workspace = workspace
         self.resolvedGaps = ResolvedGaps(gaps: config.gaps, monitor: workspace.workspaceMonitor)
+        let curtained = NewWindowCurtain.shared.curtained
+        newWindows = curtained.isEmpty ? [] : curtained.intersection(workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId))
     }
+
+    @MainActor
+    func write(_ window: Window, _ frame: @escaping @MainActor () -> ()) {
+        if newWindows.isEmpty || newWindows.contains(window.windowId) { frame() } else { otherFrames.frames.append(frame) }
+    }
+}
+
+private final class LaterFrames {
+    @MainActor var frames: [@MainActor () -> ()] = []
 }
 
 extension Window {
