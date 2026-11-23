@@ -83,7 +83,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   `MacosForeignDesktopWindowsContainer`); focus, corner fallback, and shutdown leave them under macOS control.
   The earlier environment-variable
   native-Space/group experiments remain available separately; this config option takes precedence over them.
-  Investigation and live-test evidence: `dev-docs/native-window-hiding.md`.
+  Investigation and live-test evidence: `docs/dev/native-window-hiding.md`.
 - **Commands don't wait for a frontmost app that shows no window**: before a command runs, AeroSpace asks the frontmost
   app for its focused window. After a switch to an empty workspace that's still the app of the previous workspace, with
   its window hidden. A game there (Slay the Spire 2, Godot) answers AX only between frames, and with its window off
@@ -170,7 +170,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   Zen and Spotify had light frames (four or five into Zen or Ghostty from another app). After, none of 39. The
   price: the window of the same app shows up 3 to 5 ms later (Ghostty's answer), any other one under 1 ms later.
   That left the frame in which both windows were on screen, with their shadows on top of each other: the next entry.
-  Details: "Shadow blink on workspace switches" in `dev-docs/native-window-hiding.md`.
+  Details: "Shadow blink on workspace switches" in `docs/dev/native-window-hiding.md`.
   Tests: `ActiveLookTest`, and `HiddenWindowParkingTest.testWindowThatGetsTheFocusLooksActiveBeforeItIsRevealed` with
   the four tests after it.
 
@@ -208,7 +208,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   transaction replaced a request to WindowManager and a poll every 4 ms).
   What's left: the first switch to an app that has just started can still arrive with the light shadow (its first
   event takes long), and a command that cancels a running switch ends the wait for the next windows early, as it
-  did before. Everything that was tried is in "Both workspaces in one frame" in `dev-docs/native-window-hiding.md`.
+  did before. Everything that was tried is in "Both workspaces in one frame" in `docs/dev/native-window-hiding.md`.
   Tests: `HiddenWindowParkingTest.testWindowsOfTwoWorkspacesChangePlacesInOneTransaction` with the nine tests after
   it.
 
@@ -307,7 +307,7 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   as before), an app that gives a window another frame after it has left the curtain, a window that its app creates
   more than 5 s before it shows it, and the apps that show a window within a few milliseconds of creating it (Zen:
   4 to 6 ms after the curtain, and never seen so far).
-  Everything that was measured is in "New windows in their tile" in `dev-docs/native-window-hiding.md`.
+  Everything that was measured is in "New windows in their tile" in `docs/dev/native-window-hiding.md`.
   Tests: `NewWindowCurtainTest`, `HiddenWindowParkingTest.testNewWindowBehindTheCurtainGetsItsFrameLikeAWindowOnTheDesktop`
   with the four tests after it, and `EnhancedUserInterfaceTest.testAppThatEnablesTheAttributeAgainAndAgainIsAskedBeforeEveryBatch`
   with the test after it.
@@ -329,8 +329,9 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
     stays: `script/generate.sh` makes the help texts of the CLI from `docs/aerospace-*.adoc`. Nothing renders
     `docs/` to HTML or man pages any more, so nothing checks its AsciiDoc syntax either.
   - Moved: every script but `rebuild-and-install.sh` is in `script/` (`build-release.sh`, `build-debug.sh`,
-    `test.sh`, `swift-test.sh`, `lint.sh`, `format.sh`, `generate.sh`), and `axDumps/` is
-    `Sources/AppBundleTests/axDumps/` (excluded from the test target in `Package.swift`).
+    `test.sh`, `swift-test.sh`, `lint.sh`, `format.sh`, `generate.sh`), `axDumps/` is
+    `Sources/AppBundleTests/axDumps/` (excluded from the test target in `Package.swift`), `resources/` is
+    `xcode/resources/` (only the Xcode build reads it), `dev-docs/` is `docs/dev/`, and `legal/` is `docs/legal/`.
 
   When taking upstream: git follows the moves, so upstream's changes to a moved file land in the new place. If
   upstream changes a deleted file, it conflicts: keep it deleted. If upstream changes a step that was cut from
@@ -388,4 +389,4 @@ git push --force-with-lease origin main          # update the fork (rebase rewri
   call each other as `./script/<name>.sh`. Only `rebuild-and-install.sh` is at the root, where the
   `aerospace-rebuild` symlink points. `script/setup.sh` nukes `PATH` to `.deps/bin:/bin:/usr/bin` and wraps
   optional tools resolved via `which` at source time, so a tool has to be on `PATH` *before* a script is invoked.
-- See `dev-docs/development.md` for upstream's notes on dependencies, the codesign certificate, and Xcode.
+- See `docs/dev/development.md` for upstream's notes on dependencies, the codesign certificate, and Xcode.

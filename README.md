@@ -1,6 +1,6 @@
 # AeroSpace Beta [![Build](https://github.com/nikitabobko/AeroSpace/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/nikitabobko/AeroSpace/actions/workflows/build.yml)
 
-<img src="./resources/Assets.xcassets/AppIcon.appiconset/icon.png" width="40%" align="right">
+<img src="./xcode/resources/Assets.xcassets/AppIcon.appiconset/icon.png" width="40%" align="right">
 
 AeroSpace is an i3-like tiling window manager for macOS
 
@@ -104,7 +104,7 @@ Big and important issues which will go after 1.0 release:
 
 ## Development
 
-A notes on how to setup the project, build it, how to run the tests, etc. can be found here: [dev-docs/development.md](./dev-docs/development.md)
+A notes on how to setup the project, build it, how to run the tests, etc. can be found here: [docs/dev/development.md](./docs/dev/development.md)
 
 ## Project values
 
