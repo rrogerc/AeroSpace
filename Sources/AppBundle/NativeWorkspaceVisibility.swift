@@ -471,6 +471,8 @@ final class NativeWorkspaceVisibility {
     private var activeBackend: Backend?
     private var hiddenHome: UInt64?
     private var hiddenGroup: UInt64?
+    /// A window is in one of them for a few milliseconds while its workspace is shown or hidden: see WindowSwapGroups
+    private var swapGroups: [UInt64] = []
 
     var usesHiddenParking: Bool { config.enableNativeWindowHiding }
 
@@ -484,7 +486,10 @@ final class NativeWorkspaceVisibility {
         guard home != 0 else { return true }
         guard let values = AeroSpaceCopyAllWindowSpaces(id) as? [NSNumber] else { return false }
         let spaces = values.map(\.uint64Value)
-        return spaces == [home] || hiddenGroup.map { spaces == [$0] } == true
+        if spaces == [home] || hiddenGroup.map({ spaces == [$0] }) == true { return true }
+        // On its way to the desktop or to the hidden group
+        return !spaces.isEmpty && spaces.contains(where: swapGroups.contains) &&
+            spaces.allSatisfy { $0 == home || $0 == hiddenGroup || swapGroups.contains($0) }
     }
 
     func isWindowOnForeignNativeDesktop(_ id: UInt32) -> Bool {
@@ -493,6 +498,7 @@ final class NativeWorkspaceVisibility {
         else { return false }
         let spaces = values.map(\.uint64Value)
         guard !spaces.contains(hiddenHome), hiddenGroup.map({ !spaces.contains($0) }) ?? true,
+              !spaces.contains(where: swapGroups.contains),
               let raw = AeroSpaceCopyNativeDisplays(), let display = NativeDisplaySpaces.decode(raw)
         else { return false }
         return display.spaces.contains { $0.id != hiddenHome && ($0.type == 0 || $0.type == 4) && spaces.contains($0.id) }
@@ -562,7 +568,7 @@ final class NativeWorkspaceVisibility {
             case .managedSpaces: await worker.apply(windows, request: request)
         }
         let hiddenContext = if backend == .hiddenParking { await hiddenParkingWorker.context() }
-        else { nil as (home: UInt64?, group: UInt64?)? }
+        else { nil as (home: UInt64?, group: UInt64?, swapGroups: [UInt64])? }
         signposter.endInterval("awaitNativeVisibility", state)
         if let looksActive, focus?.looksActive != true { ActiveLookingApp.shared.wasNotTold(looksActive) }
         // Hidden parking cancels stale and unpublished gates on its actor. An
@@ -574,6 +580,7 @@ final class NativeWorkspaceVisibility {
         if let hiddenContext {
             hiddenHome = hiddenContext.home
             hiddenGroup = hiddenContext.group
+            swapGroups = hiddenContext.swapGroups
         }
         switch plan {
             case .native(let gates): NativeVisibilityGates.shared.replace(gates)
@@ -604,6 +611,7 @@ final class NativeWorkspaceVisibility {
             activeBackend = nil
             hiddenHome = nil
             hiddenGroup = nil
+            swapGroups = []
             NativeVisibilityGates.shared.replace([:])
         }
         return recovered

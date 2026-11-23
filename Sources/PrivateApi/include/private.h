@@ -86,4 +86,35 @@ bool AeroSpaceCommitWorkspaceGroupVisibility(CFDictionaryRef show, CFDictionaryR
 // Windows already in another native Space retain that membership.
 bool AeroSpaceRestoreWorkspaceGroups(CFDictionaryRef groups, uint64_t home);
 
+// A swap shows the windows of one workspace and hides the windows of another one in the same frame.
+// A window can't join the desktop in a transaction of this connection: WindowManager shows it a few milliseconds
+// after the request, at a moment of its own. But the alpha of a group that this connection owns can change in a
+// transaction, and while a group is shown, its alpha applies to all its windows, also to a window that is on the
+// desktop as well. So a swap needs two shown groups: `arriving` with alpha 0, and `leaving` with alpha 1.
+//   1. Stage: the windows to reveal move from `parking` to `arriving` and join the desktop there, unseen.
+//      The windows to hide join `leaving`, and stay on the desktop as they are.
+//   2. Commit, once WindowServer lists the windows to reveal as on screen: one transaction gives `arriving`
+//      alpha 1 and `leaving` alpha 0.
+//   3. Settle: the hidden windows leave the desktop for `parking`, the revealed ones leave `arriving`, and the
+//      groups get their alphas back. Nothing of it shows, but it must be over before a revealed window is focused:
+//      as long as the window that had the keyboard is on the desktop, seen or not, macOS draws the window that
+//      gets the keyboard as inactive for a frame or more.
+typedef struct {
+    uint64_t home;
+    uint64_t parking;
+    uint64_t arriving;
+    uint64_t leaving;
+} AeroSpaceWindowSwapSpaces;
+bool AeroSpaceWindowSwapAvailable(void);
+// Shows the two groups, `arriving` with alpha 0 and `leaving` with alpha 1. Both must be empty.
+// `names` maps the IDs of both groups (CFNumber) to their unique names (CFString).
+bool AeroSpacePrepareWindowSwapGroups(uint64_t arriving, uint64_t leaving, CFDictionaryRef names);
+// `reveal` and `hide` are window IDs (CFNumber). The caller must have checked that every window to reveal is in
+// `parking` only, and every window to hide on `home` only: the windows are moved without another look.
+// Waits until WindowServer reports the new spaces of every window.
+bool AeroSpaceStageWindowSwap(CFArrayRef reveal, CFArrayRef hide, AeroSpaceWindowSwapSpaces spaces);
+bool AeroSpaceCommitWindowSwap(AeroSpaceWindowSwapSpaces spaces);
+// Waits until the revealed windows are on `home` only, and the hidden ones in `parking` only.
+bool AeroSpaceSettleWindowSwap(CFArrayRef reveal, CFArrayRef hide, AeroSpaceWindowSwapSpaces spaces);
+
 #endif

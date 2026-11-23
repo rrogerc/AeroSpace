@@ -823,6 +823,243 @@ final class HiddenWindowParkingTest: XCTestCase {
         XCTAssertEqual(reenabled.home, 2)
         _ = await worker.stop(retry: false)
     }
+
+    private func swapDriver() -> HiddenParkingTestDriver {
+        let driver = HiddenParkingTestDriver()
+        driver.mutate { $0.swapAvailable = true }
+        return driver
+    }
+
+    func testWindowsOfTwoWorkspacesChangePlacesInOneTransaction() async throws {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let first = native(await worker.apply(windows(), request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        XCTAssertEqual(context.swapGroups, [200, 201], "The groups of a swap are shown long before the first swap")
+        XCTAssertEqual(driver.read { $0.calls }, ["hide [20]"], "Nothing is revealed: there's nothing to swap")
+
+        let focus = RevealedFocus(windowId: 20, pid: 200, look: .events)
+        let next = native(await worker.apply(windows(20), request: 2, focus: focus))
+        XCTAssertEqual(driver.read { $0.calls }, ["hide [20]", "look active 20", "stage [20] [10]", "commit", "settle [20] [10]"])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]], "Afterwards the windows are where they are without a swap")
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 1)
+        XCTAssertTrue(next[20]?.1.isReady == true)
+        XCTAssertFalse(next[10]?.1.isReady == true)
+        XCTAssertFalse(first[10]?.1.isReady == true)
+
+        // And back, with the same groups
+        _ = native(await worker.apply(windows(), request: 3))
+        XCTAssertEqual(driver.read { Array($0.calls.suffix(3)) }, ["stage [10] [20]", "commit", "settle [10] [20]"])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [group]])
+        XCTAssertEqual(driver.read { $0.created.count }, 1)
+        XCTAssertEqual(driver.read { $0.swapGroupsCreated }, 1)
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+
+        _ = await worker.stop(retry: false)
+        XCTAssertTrue(driver.read { $0.groups.isEmpty }, "The groups of a swap are removed with the hidden group")
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+    }
+
+    func testOnlyWindowsOnBothSidesAreSwapped() async {
+        let driver = swapDriver()
+        driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let third = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "3")
+        _ = native(await worker.apply(windows() + [third], request: 1))
+        // The second workspace becomes visible on top of the first one (e.g. its window moved there)
+        let both = [windows()[0], NativeVisibilityWindow(id: 20, pid: 200, visible: true, workspace: "1"), third]
+        _ = native(await worker.apply(both, request: 2))
+        // And an empty workspace gets the focus
+        let none = both.map { NativeVisibilityWindow(id: $0.id, pid: $0.pid, visible: false, workspace: $0.workspace) }
+        _ = native(await worker.apply(none, request: 3))
+        XCTAssertEqual(driver.read { $0.calls }, ["hide [20, 30]", "reveal [20]", "hide [10, 20]"])
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 0)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testSwapWaitsUntilTheNextWindowsAreOnScreen() async throws {
+        let driver = swapDriver()
+        driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows() + [NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "2")], request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        driver.mutate {
+            $0.notOnScreen = [30]
+            $0.afterOnScreen = { query in
+                XCTAssertFalse(driver.read { $0.calls.contains("commit") }, "A swap before the windows are on screen would show the wallpaper")
+                XCTAssertEqual(driver.read { $0.memberships }, [10: [1, 201], 20: [200, 1], 30: [200, 1]], "All of them wait on the desktop")
+                XCTAssertFalse(original[20]?.1.isReady == true, "The wait must not release native focus early")
+                if query == 2 { driver.mutate { $0.notOnScreen = [] } }
+            }
+        }
+        let incoming = windows(20) + [NativeVisibilityWindow(id: 30, pid: 300, visible: true, workspace: "2")]
+        let result = native(await worker.apply(incoming, request: 2))
+        XCTAssertEqual(driver.read { $0.onScreenQueries }, 3)
+        XCTAssertEqual(driver.read { Array($0.calls.suffix(3)) }, ["stage [20, 30] [10]", "commit", "settle [20, 30] [10]"])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1], 30: [1]])
+        XCTAssertTrue(result[20]?.1.isReady == true)
+        XCTAssertTrue(result[30]?.1.isReady == true)
+        XCTAssertFalse(result[10]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testWindowThatNeverShowsUpCannotHoldTheSwapBack() async throws {
+        for unavailable in [true, false] {
+            let driver = swapDriver()
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            _ = native(await worker.apply(windows(), request: 1))
+            let context = await worker.context()
+            let group = try XCTUnwrap(context.group)
+            driver.mutate {
+                $0.failOnScreen = unavailable
+                $0.notOnScreen = [20]
+            }
+            let started = ContinuousClock.now
+            let result = native(await worker.apply(windows(20), request: 2))
+            XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+            if unavailable { XCTAssertEqual(driver.read { $0.onScreenQueries }, 1) }
+            else { XCTAssertGreaterThan(driver.read { $0.onScreenQueries }, 1) }
+            XCTAssertEqual(driver.read { Array($0.calls.suffix(2)) }, ["commit", "settle [20] [10]"])
+            XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+            XCTAssertTrue(result[20]?.1.isReady == true)
+            XCTAssertTrue(driver.read { $0.restores.isEmpty })
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testPreviousWindowsAreOffTheDesktopBeforeTheNextOneCanBeFocused() async throws {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        let entered = expectation(description: "The swap is committed")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate { $0.beforeSettle = { entered.fulfill(); release.wait() } }
+        let desired = windows(20)
+        let refresh = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        // The previous window is unseen, but on the desktop. A focus now would show the next one as inactive:
+        // the worker hasn't answered yet, so nobody has a gate to focus it through
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1, 201], 20: [200, 1]])
+        XCTAssertTrue(driver.read { $0.calls.last == "commit" })
+        for entry in original.values { XCTAssertFalse(entry.1.isReady) }
+        release.signal()
+        let next = native(await refresh.value)
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+        XCTAssertTrue(next[20]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testMainWindowRequestHasTheTimeOfTheStagingToBeAnswered() async {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let request = RunLoopJob(.cancellable)
+        let focus = RevealedFocus(windowId: 20, pid: 200, look: .mainWindow {
+            driver.mutate { $0.calls.append("main window requested") }
+            return request
+        })
+        driver.mutate {
+            $0.afterStage = {
+                XCTAssertFalse(request.isComplete, "The staging doesn't wait for the app")
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(5)) { request.complete() }
+            }
+            $0.beforeCommit = { XCTAssertTrue(request.isComplete, "The window must not show up before it's the main window of its app") }
+        }
+        _ = native(await worker.apply(windows(20), request: 2, focus: focus))
+        XCTAssertEqual(driver.read { Array($0.calls.suffix(4)) }, ["main window requested", "stage [20] [10]", "commit", "settle [20] [10]"])
+        XCTAssertFalse(focus.looksActive)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testLeavingTheDesktopDuringASwapPutsTheWindowsBack() async {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        let original = native(await worker.apply(windows(), request: 1))
+        driver.mutate {
+            $0.notOnScreen = [20]
+            $0.afterOnScreen = { _ in driver.mutate { $0.layout = HiddenParkingTestDriver.layout(current: 2, normal: [1, 2]) } }
+        }
+        guard case .suspended = await worker.apply(windows(20), request: 2) else {
+            return XCTFail("Leaving home during the wait must suspend tiling")
+        }
+        XCTAssertFalse(driver.read { $0.calls.contains("commit") }, "Nothing is swapped on another desktop")
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1]])
+        XCTAssertEqual(driver.read { $0.restores }, [1])
+        XCTAssertTrue(driver.read { $0.groups.isEmpty })
+        XCTAssertEqual(driver.read { $0.layout?.current }, 2)
+        XCTAssertFalse(original[10]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testCancelledSwapIsFinished() async throws {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        let context = await worker.context()
+        let group = try XCTUnwrap(context.group)
+        let entered = expectation(description: "The windows are staged")
+        let release = DispatchSemaphore(value: 0)
+        driver.mutate { $0.afterStage = { entered.fulfill(); release.wait() } }
+        let desired = windows(20)
+        let refresh = Task.detached { await worker.apply(desired, request: 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        refresh.cancel()
+        release.signal()
+        let cancelled = native(await refresh.value)
+        driver.mutate { $0.afterStage = nil }
+        // Staged windows are on the desktop and in a group: on their own they'd stay like that
+        XCTAssertEqual(driver.read { Array($0.calls.suffix(3)) }, ["stage [20] [10]", "commit", "settle [20] [10]"])
+        XCTAssertEqual(driver.read { $0.memberships }, [10: [group], 20: [1]])
+        XCTAssertTrue(driver.read { $0.restores.isEmpty })
+        for entry in cancelled.values { XCTAssertFalse(entry.1.isReady) }
+        let next = native(await worker.apply(desired, request: 3))
+        XCTAssertTrue(next[20]?.1.isReady == true)
+        _ = await worker.stop(retry: false)
+    }
+
+    func testFailedSwapPutsEveryWindowBackOnTheDesktop() async {
+        for step in ["stage", "commit", "settle"] {
+            let driver = swapDriver()
+            driver.mutate { $0.owners[30] = 300; $0.memberships[30] = [1] }
+            let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+            let unrelated = NativeVisibilityWindow(id: 30, pid: 300, visible: false, workspace: "3")
+            let original = native(await worker.apply(windows() + [unrelated], request: 1))
+            driver.mutate { $0.failSwap = step }
+            guard case .offscreen = await worker.apply(windows(20) + [unrelated], request: 2) else {
+                return XCTFail("A swap that failed at \(step) must end with the windows restored")
+            }
+            XCTAssertEqual(driver.read { $0.memberships }, [10: [1], 20: [1], 30: [1]], step)
+            XCTAssertTrue(driver.read { $0.groups.isEmpty }, step)
+            XCTAssertEqual(driver.read { $0.restores }, [1], step)
+            XCTAssertFalse(driver.read { $0.calls.contains { $0.hasPrefix("reveal") } }, "The other order is no way out of a swap that has begun: \(step)")
+            for entry in original.values { XCTAssertFalse(entry.1.isReady, step) }
+            _ = await worker.stop(retry: false)
+        }
+    }
+
+    func testSwapGroupsAreCreatedAgainAfterARecovery() async {
+        let driver = swapDriver()
+        let worker = HiddenWindowParkingWorker(driver: driver, didRecover: {})
+        _ = native(await worker.apply(windows(), request: 1))
+        // A retired live window restores the hidden group, and the groups of a swap with it
+        guard case .offscreen = await worker.apply(Array(windows().prefix(1)), request: 2) else { return XCTFail("Expected a restoration") }
+        let restored = await worker.context()
+        XCTAssertNil(restored.group)
+        XCTAssertTrue(restored.swapGroups.isEmpty)
+        XCTAssertTrue(driver.read { $0.groups.isEmpty })
+        _ = native(await worker.apply(windows(), request: 3))
+        let context = await worker.context()
+        XCTAssertNotNil(context.group)
+        XCTAssertEqual(context.swapGroups, [200, 201])
+        XCTAssertEqual(driver.read { $0.swapGroupsCreated }, 2)
+        _ = native(await worker.apply(windows(20), request: 4))
+        XCTAssertEqual(driver.read { Array($0.calls.suffix(3)) }, ["stage [20] [10]", "commit", "settle [20] [10]"])
+        _ = await worker.stop(retry: false)
+    }
 }
 
 private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable {
@@ -853,6 +1090,15 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         var afterReveal: (@Sendable () -> Void)?
         var lookedActive: [String] = []
         var failLookActive = false
+        /// Without them, the tests above cover the order that is left when windows can't be swapped
+        var swapAvailable = false
+        var swapGroupsCreated = 0
+        var failSwap: String?
+        var afterStage: (@Sendable () -> Void)?
+        var beforeCommit: (@Sendable () -> Void)?
+        var beforeSettle: (@Sendable () -> Void)?
+        /// Every call that shows or hides a window, in order
+        var calls: [String] = []
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -884,7 +1130,7 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
         let (visible, query, callback) = state.withLock { state in
             state.onScreenQueries += 1
             let visible = state.failOnScreen ? nil : Set(ids.filter {
-                !state.notOnScreen.contains($0) && state.memberships[$0] == [state.layout?.current ?? 0]
+                !state.notOnScreen.contains($0) && state.memberships[$0]?.contains(state.layout?.current ?? 0) == true
             })
             return (visible, state.onScreenQueries, state.afterOnScreen)
         }
@@ -908,6 +1154,7 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     func hide(_ ids: [UInt32], in group: WorkspaceVisibilityGroup) -> Bool {
         let (succeeded, callback) = state.withLock { state in
             state.hides.append(ids)
+            state.calls.append("hide \(ids)")
             guard state.groups[group.id] == group.name else { return (false, nil as (@Sendable () -> Void)?) }
             for id in ids { state.memberships[id] = [group.id] }
             return (!state.failHideAfterMove, state.afterHide)
@@ -919,6 +1166,7 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     func reveal(_ ids: [UInt32], from group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {
         let (succeeded, callback) = state.withLock { state in
             state.reveals.append(ids)
+            state.calls.append("reveal \(ids)")
             guard state.groups[group.id] == group.name else { return (false, nil as (@Sendable () -> Void)?) }
             for id in ids {
                 guard state.memberships[id] == [group.id] else { return (false, nil as (@Sendable () -> Void)?) }
@@ -933,22 +1181,69 @@ private final class HiddenParkingTestDriver: HiddenWindowParkingDriver, Sendable
     func lookActive(_ id: UInt32, pid: Int32) -> Bool {
         state.withLock { state in
             state.lookedActive.append("window \(id) of pid \(pid), before reveal \(state.reveals.count + 1)")
+            state.calls.append("look active \(id)")
             return !state.failLookActive
         }
     }
 
-    func restore(_ group: WorkspaceVisibilityGroup, home: UInt64) -> Bool {
+    func restore(_ groups: [WorkspaceVisibilityGroup], home: UInt64) -> Bool {
         state.withLock { state in
             state.restores.append(home)
-            guard !state.failRestore, state.groups[group.id] == group.name,
+            guard !state.failRestore, groups.allSatisfy({ state.groups[$0.id] == $0.name }),
                   state.layout?.spaces.contains(where: { $0.id == home && $0.type == 0 }) == true
             else { return false }
-            for (id, membership) in state.memberships where membership.contains(group.id) {
-                let others = membership.filter { $0 != group.id }
+            let ids = Set(groups.map(\.id))
+            for (id, membership) in state.memberships where !ids.isDisjoint(with: membership) {
+                let others = membership.filter { !ids.contains($0) }
                 state.memberships[id] = others.isEmpty ? [home] : others
             }
-            state.groups[group.id] = nil
+            for id in ids { state.groups[id] = nil }
             return true
+        }
+    }
+
+    func createSwapGroups(home: UInt64) -> WindowSwapGroups? {
+        state.withLock { state in
+            guard state.swapAvailable else { return nil }
+            state.swapGroupsCreated += 1
+            let groups = ["arriving", "leaving"].enumerated().map { WorkspaceVisibilityGroup(id: UInt64(200 + $0.offset), name: $0.element) }
+            for group in groups { state.groups[group.id] = group.name }
+            return WindowSwapGroups(arriving: groups[0], leaving: groups[1])
+        }
+    }
+
+    func stage(reveal: [UInt32], hide: [UInt32], parking: WorkspaceVisibilityGroup, swap: WindowSwapGroups, home: UInt64) -> Bool {
+        let (succeeded, callback) = state.withLock { state in
+            state.calls.append("stage \(reveal) \(hide)")
+            guard [parking, swap.arriving, swap.leaving].allSatisfy({ state.groups[$0.id] == $0.name }),
+                  reveal.allSatisfy({ state.memberships[$0] == [parking.id] }), hide.allSatisfy({ state.memberships[$0] == [home] })
+            else { return (false, nil as (@Sendable () -> Void)?) }
+            for id in reveal { state.memberships[id] = [swap.arriving.id, home] }
+            for id in hide { state.memberships[id] = [home, swap.leaving.id] }
+            return (state.failSwap != "stage", state.afterStage)
+        }
+        callback?()
+        return succeeded
+    }
+
+    func commit(_ swap: WindowSwapGroups) -> Bool {
+        state.withLock { $0.beforeCommit }?()
+        return state.withLock { state in
+            state.calls.append("commit")
+            return state.failSwap != "commit"
+        }
+    }
+
+    func settle(reveal: [UInt32], hide: [UInt32], parking: WorkspaceVisibilityGroup, swap: WindowSwapGroups, home: UInt64) -> Bool {
+        state.withLock { $0.beforeSettle }?()
+        return state.withLock { state in
+            state.calls.append("settle \(reveal) \(hide)")
+            guard reveal.allSatisfy({ state.memberships[$0] == [swap.arriving.id, home] }),
+                  hide.allSatisfy({ state.memberships[$0] == [home, swap.leaving.id] })
+            else { return false }
+            for id in reveal { state.memberships[id] = [home] }
+            for id in hide { state.memberships[id] = [parking.id] }
+            return state.failSwap != "settle"
         }
     }
 }
