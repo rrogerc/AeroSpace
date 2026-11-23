@@ -74,6 +74,7 @@ let package = Package(
             dependencies: [
                 .target(name: "AppBundle"),
             ],
+            exclude: ["axDumps"], // Test data that AxUiElementWindowTypeTest reads from the disk
             swiftSettings: swiftSettings,
         ),
     ],
