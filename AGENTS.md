@@ -317,6 +317,12 @@ Kept as commits on top of `upstream/main` (they replay on every rebase):
   deleted `Sources/Common/model/sponsorshipPrompts.swift`). If upstream changes the prompts, a rebase conflicts on
   the deleted file: keep it deleted.
 
+- **Upstream's project files are gone**: what only upstream's own project needs is deleted. That's `.github/` (CI,
+  issue and PR templates, funding), `CONTRIBUTING.md`, `install-from-sources.sh` (the brew cask install),
+  `script/publish-release.sh`, `makefile`, and the scripts that run the debug build (`run-cli.sh`, `run-debug.sh`,
+  `script/reset-accessibility-permission-for-debug.sh`). `build-debug.sh` stays: `test.sh` builds through it. If
+  upstream changes one of the deleted files, taking upstream conflicts on it: keep it deleted.
+
 ## Rebuild, install, and restart — one command
 
 ```bash
@@ -331,7 +337,7 @@ It does, in order:
 2. **Builds** the release via `./build-release.sh` (man pages + site, shell completion, universal arm64+x86_64 binary, Xcode app, codesign, validation, zip/brew packaging).
 3. **Quits** the running AeroSpace.
 4. **Installs** `.release/AeroSpace.app` → `/Applications/AeroSpace.app` and `.release/aerospace` → `~/.local/bin/aerospace`
-   (the install is a manual copy — this fork does **not** use the `aerospace-dev` brew cask that `install-from-sources.sh` sets up).
+   (the install is a manual copy — this fork does **not** use the `aerospace-dev` brew cask, and upstream's `install-from-sources.sh` that sets it up is deleted).
 5. **Relaunches**, waits for the server, and prints the running version.
 
 Install locations / Ruby are overridable via env vars: `APP_DEST`, `CLI_DEST`, `RUBY_FORMULA`.
@@ -366,4 +372,4 @@ If you ever build with `build-release.sh` directly, prefix it: `PATH="$(brew --p
 - Build scripts live at the repo root and `cd "$(dirname "$0")"`. `script/setup.sh` nukes `PATH` to
   `.deps/bin:/bin:/usr/bin` and wraps optional tools resolved via `which` at source time — that's why Ruby must be
   on `PATH` *before* invoking the build.
-- See `dev-docs/development.md` for upstream's documented (brew-cask) build flow.
+- See `dev-docs/development.md` for upstream's notes on dependencies, the codesign certificate, and Xcode.

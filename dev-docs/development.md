@@ -5,8 +5,6 @@ To build/install from sources do the following:
 2. Create codesign certificate in `Keychain Access.app`
 3. Run one of the entry point scripts to build/install from sources
 
-If you struggle to build AeroSpace locally, you can also refer to [builds in GitHub Actions](https://github.com/nikitabobko/AeroSpace/actions?query=branch%3Amain)
-
 ## Definitions
 
 **SPM.** Swift package manager and Swift build tool. In other words, `swift` CLI tool
@@ -43,8 +41,6 @@ If you only plan to build the debug version of AeroSpace, you can run it from th
 -   `build-debug.sh` - Build debug build to `.debug` dir by using SPM. (Xcode is not involved)
 -   `test.sh` - Run tests.
 -   `swiftformat.sh` - Format the code.
--   `run-debug.sh` - Run AeroSpace.app debug build.
--   `run-cli.sh` - Run `aerospace` in CLI. Arguments are forwarded to `aerospace` binary.
 -   `build-docs.sh` - Build the site and man pages to `.site` and `.man` dirs respectively.
 -   `build-shell-completion.sh` - Build shell completion to `.shell-completion`.
     You can test that the completion works properly by sourcing the file `source ./.shell-completion/zsh/_aerospace`
@@ -53,9 +49,7 @@ If you only plan to build the debug version of AeroSpace, you can run it from th
 
 **Release build**
 -   `build-release.sh` - Build release build to `.release` dir by using Xcode.
--   `install-from-sources.sh` - Build release build from sources and install it as `aerospace-dev` brew cask.
-    This script is "work in progress".
-    Use it on your own risk.
+-   `rebuild-and-install.sh` - Build release build from sources, install it, and restart AeroSpace.
 
 ## IDE
 

@@ -54,7 +54,6 @@ Other installation options: https://nikitabobko.github.io/AeroSpace/guide#instal
 ## Community, discussions, issues
 
 AeroSpace project doesn't accept Issues directly - we ask you to create a [Discussion](https://github.com/nikitabobko/AeroSpace/discussions) first.
-Please read [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
 
 Community discussions happen at GitHub Discussions.
 There you can discuss bugs, propose new features, ask your questions, show off your setup, or just chat.
